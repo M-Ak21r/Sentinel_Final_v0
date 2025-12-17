@@ -50,6 +50,10 @@ class DoorSentry:
     - Video streaming
     """
     
+    # Configuration constants
+    UNLOCK_RATE_LIMIT_SECONDS = 15
+    INTRUDER_ALERT_THRESHOLD_SECONDS = 5
+    
     def __init__(self):
         """Initialize Door Sentry with camera, face auth, and MQTT."""
         logger.info("Initializing Door Sentry...")
@@ -142,6 +146,15 @@ class DoorSentry:
         except Exception as e:
             logger.error(f"Error in mqtt_callback: {e}")
     
+    def _is_mqtt_connected(self):
+        """
+        Check if MQTT client is connected.
+        
+        Returns:
+            bool: True if connected, False otherwise
+        """
+        return self.mqtt_client is not None and self.mqtt_client.is_connected()
+    
     def _publish_unlock(self, user="Unknown"):
         """
         Publish MQTT unlock command.
@@ -149,7 +162,7 @@ class DoorSentry:
         Args:
             user (str): Name of the authorized user
         """
-        if not self.mqtt_client or not self.mqtt_client.is_connected():
+        if not self._is_mqtt_connected():
             logger.warning("MQTT client not connected, cannot publish unlock command")
             return
             
@@ -179,7 +192,7 @@ class DoorSentry:
             level (str): Alert level (critical, warning, info)
             message (str): Alert message
         """
-        if not self.mqtt_client or not self.mqtt_client.is_connected():
+        if not self._is_mqtt_connected():
             logger.warning("MQTT client not connected, cannot publish alert")
             return
             
@@ -238,8 +251,8 @@ class DoorSentry:
                         color = (0, 255, 0)  # Green
                         label = f"{name} ({confidence:.2f})"
                         
-                        # Check rate limit for unlock (15 seconds)
-                        if current_time - self.last_unlock_time > 15:
+                        # Check rate limit for unlock
+                        if current_time - self.last_unlock_time > self.UNLOCK_RATE_LIMIT_SECONDS:
                             self._publish_unlock(user=name)
                             self.last_unlock_time = current_time
                         
@@ -257,7 +270,7 @@ class DoorSentry:
                             self.unknown_face_start_time = current_time
                         else:
                             duration = current_time - self.unknown_face_start_time
-                            if duration > 5:  # Alert after 5 seconds
+                            if duration > self.INTRUDER_ALERT_THRESHOLD_SECONDS:
                                 self._publish_alert(
                                     level="critical",
                                     message="Intruder at door"
