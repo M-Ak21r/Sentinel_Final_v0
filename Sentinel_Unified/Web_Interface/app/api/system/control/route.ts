@@ -35,7 +35,10 @@ export async function POST(request: NextRequest) {
     }
 
     // Prepare MQTT payload based on action
-    let mqttPayload: { target: string; action: string }
+    let mqttPayload: { target: string; action: string } = {
+      target: '',
+      action: '',
+    }
 
     if (action === 'UNLOCK') {
       // UNLOCK action - target specific door

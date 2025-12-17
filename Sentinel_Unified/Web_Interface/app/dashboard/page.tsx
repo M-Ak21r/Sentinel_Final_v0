@@ -90,11 +90,11 @@ export default function DashboardPage() {
             <div className="lg:col-span-2 space-y-6">
               <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
                 <VideoFeed
-                  src="http://localhost:5001/video_feed"
+                  src={process.env.NEXT_PUBLIC_DOOR_SENTRY_URL || "http://localhost:5001/video_feed"}
                   label="Door Sentry"
                 />
                 <VideoFeed
-                  src="http://localhost:5002/video_feed"
+                  src={process.env.NEXT_PUBLIC_INTERIOR_WATCH_URL || "http://localhost:5002/video_feed"}
                   label="Interior Watch"
                 />
               </div>

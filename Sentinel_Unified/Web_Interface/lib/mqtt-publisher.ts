@@ -56,7 +56,8 @@ export async function publishCommand(
         }
       }, 6000)
     } catch (error) {
-      reject(new Error(`MQTT setup failed: ${error}`))
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      reject(new Error(`MQTT setup failed: ${errorMessage}`))
     }
   })
 }

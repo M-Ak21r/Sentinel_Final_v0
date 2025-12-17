@@ -1,6 +1,6 @@
 'use client'
 
-import { useState } from 'react'
+import { useState, useRef } from 'react'
 
 interface VideoFeedProps {
   src: string
@@ -10,6 +10,7 @@ interface VideoFeedProps {
 export default function VideoFeed({ src, label }: VideoFeedProps) {
   const [hasError, setHasError] = useState(false)
   const [isRetrying, setIsRetrying] = useState(false)
+  const imgRef = useRef<HTMLImageElement>(null)
 
   const handleError = () => {
     setHasError(true)
@@ -20,9 +21,8 @@ export default function VideoFeed({ src, label }: VideoFeedProps) {
     setHasError(false)
     
     // Force a reload by adding a timestamp to the src
-    const img = document.getElementById(`video-${label}`) as HTMLImageElement
-    if (img) {
-      img.src = `${src}?t=${Date.now()}`
+    if (imgRef.current) {
+      imgRef.current.src = `${src}?t=${Date.now()}`
     }
     
     // Reset retrying state after a delay
@@ -70,7 +70,7 @@ export default function VideoFeed({ src, label }: VideoFeedProps) {
           // Live Stream
           // eslint-disable-next-line @next/next/no-img-element
           <img
-            id={`video-${label}`}
+            ref={imgRef}
             src={src}
             alt={`${label} video feed`}
             className="w-full h-full object-cover"
