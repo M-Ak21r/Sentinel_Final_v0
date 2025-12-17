@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="120" viewBox="0 0 360 120" fill="none">
+  <defs>
+    <style>
+      .border { stroke: #4c0f14; stroke-width: 10; fill: none; }
+      .text { fill: #4c0f14; font-family: 'Segoe UI', 'Inter', sans-serif; font-weight: 700; font-size: 48px; letter-spacing: 1px; }
+    </style>
+  </defs>
+  <path class="border" d="M15 60 L50 15 H310 L345 60 L310 105 H50 Z"/>
+  <text class="text" x="180" y="75" text-anchor="middle">SENTINEL</text>
+</svg>

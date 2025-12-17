@@ -1,0 +1,21 @@
+# Sentinel Unified - Python Dependencies
+# ========================================
+# Core Vision & AI
+ultralytics>=8.0.0
+insightface>=0.7.3
+onnxruntime-gpu>=1.16.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Web Framework
+flask>=2.3.0
+flask-cors>=4.0.0
+
+# IoT & Messaging
+paho-mqtt>=1.6.0
+
+# Configuration & Environment
+python-dotenv>=1.0.0
+
+# Utilities
+requests>=2.31.0
