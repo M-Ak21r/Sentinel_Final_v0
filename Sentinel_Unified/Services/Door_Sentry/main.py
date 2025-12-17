@@ -18,9 +18,7 @@ import cv2
 import json
 import time
 import logging
-import numpy as np
 from datetime import datetime
-from threading import Thread, Lock
 from flask import Flask, Response
 from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
@@ -64,8 +62,6 @@ class DoorSentry:
         # Initialize state variables
         self.last_unlock_time = 0
         self.unknown_face_start_time = None
-        self.frame_lock = Lock()
-        self.current_frame = None
         self.running = False
         
         # Initialize FaceAuthenticator
@@ -153,6 +149,10 @@ class DoorSentry:
         Args:
             user (str): Name of the authorized user
         """
+        if not self.mqtt_client or not self.mqtt_client.is_connected():
+            logger.warning("MQTT client not connected, cannot publish unlock command")
+            return
+            
         try:
             payload = {
                 "action": "UNLOCK",
@@ -179,6 +179,10 @@ class DoorSentry:
             level (str): Alert level (critical, warning, info)
             message (str): Alert message
         """
+        if not self.mqtt_client or not self.mqtt_client.is_connected():
+            logger.warning("MQTT client not connected, cannot publish alert")
+            return
+            
         try:
             payload = {
                 "level": level,
@@ -312,10 +316,6 @@ class DoorSentry:
         if not ret:
             logger.warning("Failed to encode frame as JPEG")
             return None
-        
-        # Store current frame for streaming
-        with self.frame_lock:
-            self.current_frame = jpeg.tobytes()
         
         return jpeg.tobytes()
     
