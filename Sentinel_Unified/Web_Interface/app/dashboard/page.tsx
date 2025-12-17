@@ -3,23 +3,19 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Sidebar from '@/app/components/Sidebar'
+import VideoFeed from '@/app/components/VideoFeed'
 
-interface DashboardStats {
-  totalCameras: number
-  onlineFeeds: number
-  events24h: number
-  criticalAlerts: number
+interface AlertEvent {
+  time: string
+  event: string
+  severity: 'info' | 'warning' | 'critical'
 }
 
 export default function DashboardPage() {
   const router = useRouter()
-  const [stats, setStats] = useState<DashboardStats>({
-    totalCameras: 0,
-    onlineFeeds: 0,
-    events24h: 0,
-    criticalAlerts: 0,
-  })
-  const [isLoading, setIsLoading] = useState(true)
+  const [isUnlocking, setIsUnlocking] = useState(false)
+  const [isSilencing, setIsSilencing] = useState(false)
+  const [commandStatus, setCommandStatus] = useState<string>('')
 
   useEffect(() => {
     const token = localStorage.getItem('token')
@@ -27,141 +23,184 @@ export default function DashboardPage() {
       router.push('/auth/login')
       return
     }
-    fetchStats()
   }, [router])
 
-  const fetchStats = async () => {
+  const handleCommand = async (action: 'UNLOCK' | 'SILENCE') => {
+    const isUnlock = action === 'UNLOCK'
+    const setLoading = isUnlock ? setIsUnlocking : setIsSilencing
+    
+    setLoading(true)
+    setCommandStatus('')
+
     try {
-      const response = await fetch('/api/dashboard/stats', {
+      const response = await fetch('/api/system/control', {
+        method: 'POST',
         headers: {
+          'Content-Type': 'application/json',
           Authorization: `Bearer ${localStorage.getItem('token')}`,
         },
+        body: JSON.stringify({
+          target: isUnlock ? 'door' : 'all',
+          action: action,
+        }),
       })
+
+      const data = await response.json()
+
       if (response.ok) {
-        const data = await response.json()
-        setStats(data)
+        setCommandStatus(`✓ ${data.message}`)
+        setTimeout(() => setCommandStatus(''), 3000)
+      } else {
+        setCommandStatus(`✗ ${data.error || 'Command failed'}`)
+        setTimeout(() => setCommandStatus(''), 3000)
       }
     } catch (error) {
-      console.error('Failed to fetch stats:', error)
+      console.error('Error sending command:', error)
+      setCommandStatus('✗ Connection error')
+      setTimeout(() => setCommandStatus(''), 3000)
     } finally {
-      setIsLoading(false)
+      setLoading(false)
     }
   }
 
+  // Placeholder alert events
+  const recentAlerts: AlertEvent[] = [
+    { time: '12:45 PM', event: 'Motion detected at entrance', severity: 'warning' },
+    { time: '12:32 PM', event: 'Door unlocked successfully', severity: 'info' },
+    { time: '12:18 PM', event: 'Unauthorized access attempt', severity: 'critical' },
+    { time: '12:01 PM', event: 'System armed', severity: 'info' },
+    { time: '11:50 AM', event: 'Interior camera online', severity: 'info' },
+  ]
+
   return (
-    <div className="flex">
+    <div className="flex min-h-screen bg-slate-900">
       <Sidebar />
-      <main className="ml-64 flex-1 p-8">
-        <div className="max-w-7xl mx-auto">
-          <div className="mb-8">
-            <h1 className="text-4xl font-bold mb-2 text-[#1f1a17]">Security Dashboard</h1>
-            <p className="text-gray-700">Real-time monitoring and event tracking</p>
-          </div>
+      <main className="ml-64 flex-1 pb-24">
+        {/* Header */}
+        <div className="bg-slate-950 border-b border-slate-800 px-8 py-6">
+          <h1 className="text-3xl font-bold text-cyan-400 uppercase tracking-wide">
+            Security Command Center
+          </h1>
+          <p className="text-slate-400 mt-1">Real-time surveillance and control</p>
+        </div>
 
-          {isLoading ? (
-            <div className="text-center py-12">Loading dashboard...</div>
-          ) : (
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8">
-              <StatCard
-                title="Total Cameras"
-                value={stats.totalCameras}
-                icon="📹"
-                color="blue"
-              />
-              <StatCard
-                title="Online Feeds"
-                value={stats.onlineFeeds}
-                icon="🟢"
-                color="green"
-              />
-              <StatCard
-                title="Events (24h)"
-                value={stats.events24h}
-                icon="📊"
-                color="purple"
-              />
-              <StatCard
-                title="Critical Alerts"
-                value={stats.criticalAlerts}
-                icon="🚨"
-                color="red"
-              />
+        <div className="p-8">
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            {/* Video Feeds Grid - Takes 2 columns on large screens */}
+            <div className="lg:col-span-2 space-y-6">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+                <VideoFeed
+                  src="http://localhost:5001/video_feed"
+                  label="Door Sentry"
+                />
+                <VideoFeed
+                  src="http://localhost:5002/video_feed"
+                  label="Interior Watch"
+                />
+              </div>
+
+              {/* Command Status */}
+              {commandStatus && (
+                <div className={`p-4 rounded-lg text-center font-semibold ${
+                  commandStatus.startsWith('✓')
+                    ? 'bg-emerald-900 text-emerald-300 border border-emerald-700'
+                    : 'bg-red-900 text-red-300 border border-red-700'
+                }`}>
+                  {commandStatus}
+                </div>
+              )}
             </div>
-          )}
 
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-              <div className="lg:col-span-2 glass p-6 rounded-lg">
-                <h2 className="text-xl font-bold mb-4 text-[#1f1a17]">Recent Activity</h2>
-                <div className="space-y-3">
-                  {[
-                    { time: '2 min ago', event: 'Motion detected at Front Gate' },
-                    { time: '5 min ago', event: 'Camera 3 went offline' },
-                    { time: '12 min ago', event: 'Unauthorized access attempt blocked' },
-                    { time: '25 min ago', event: 'All systems operational' },
-                  ].map((item, idx) => (
-                    <div key={idx} className="flex items-center justify-between py-2 border-b border-gray-300 last:border-0">
-                      <span className="text-gray-800">{item.event}</span>
-                      <span className="text-gray-600 text-sm">{item.time}</span>
+            {/* Live Alerts Sidebar */}
+            <div className="lg:col-span-1">
+              <div className="bg-slate-800 rounded-lg border border-slate-700 overflow-hidden">
+                <div className="bg-slate-900 px-4 py-3 border-b border-slate-700">
+                  <h2 className="text-cyan-400 font-semibold uppercase tracking-wide">
+                    Live Alerts
+                  </h2>
+                </div>
+                <div className="p-4 space-y-3 max-h-[600px] overflow-y-auto">
+                  {recentAlerts.map((alert, idx) => (
+                    <div
+                      key={idx}
+                      className={`p-3 rounded-lg border ${
+                        alert.severity === 'critical'
+                          ? 'bg-red-900 bg-opacity-20 border-red-700'
+                          : alert.severity === 'warning'
+                          ? 'bg-yellow-900 bg-opacity-20 border-yellow-700'
+                          : 'bg-slate-700 border-slate-600'
+                      }`}
+                    >
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1">
+                          <p className="text-slate-200 text-sm font-medium">
+                            {alert.event}
+                          </p>
+                          <p className="text-slate-400 text-xs mt-1">
+                            {alert.time}
+                          </p>
+                        </div>
+                        <span
+                          className={`w-2 h-2 rounded-full mt-1 ${
+                            alert.severity === 'critical'
+                              ? 'bg-red-500'
+                              : alert.severity === 'warning'
+                              ? 'bg-yellow-500'
+                              : 'bg-emerald-500'
+                          }`}
+                        ></span>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
-
-              <div className="glass p-6 rounded-lg">
-                <h2 className="text-xl font-bold mb-4 text-[#1f1a17]">System Status</h2>
-                <div className="space-y-4">
-                  <StatusItem label="Primary Server" status="online" />
-                  <StatusItem label="Database" status="online" />
-                  <StatusItem label="Backup Storage" status="online" />
-                  <StatusItem label="Network" status="online" />
-                </div>
-              </div>
             </div>
+          </div>
+        </div>
+
+        {/* Fixed Control Panel at Bottom */}
+        <div className="fixed bottom-0 left-64 right-0 bg-slate-950 border-t border-slate-800 px-8 py-4">
+          <div className="flex items-center justify-center space-x-4">
+            <button
+              onClick={() => handleCommand('UNLOCK')}
+              disabled={isUnlocking}
+              className={`px-8 py-3 rounded-lg font-bold uppercase tracking-wide transition-all ${
+                isUnlocking
+                  ? 'bg-emerald-900 text-emerald-400 cursor-not-allowed'
+                  : 'bg-emerald-600 hover:bg-emerald-500 text-white shadow-lg shadow-emerald-900/50'
+              }`}
+            >
+              {isUnlocking ? (
+                <span className="flex items-center space-x-2">
+                  <span className="animate-spin">⏳</span>
+                  <span>Processing...</span>
+                </span>
+              ) : (
+                '🔓 UNLOCK DOOR'
+              )}
+            </button>
+
+            <button
+              onClick={() => handleCommand('SILENCE')}
+              disabled={isSilencing}
+              className={`px-8 py-3 rounded-lg font-bold uppercase tracking-wide transition-all ${
+                isSilencing
+                  ? 'bg-orange-900 text-orange-400 cursor-not-allowed'
+                  : 'bg-red-600 hover:bg-red-500 text-white shadow-lg shadow-red-900/50'
+              }`}
+            >
+              {isSilencing ? (
+                <span className="flex items-center space-x-2">
+                  <span className="animate-spin">⏳</span>
+                  <span>Processing...</span>
+                </span>
+              ) : (
+                '🔇 SILENCE ALARMS'
+              )}
+            </button>
+          </div>
         </div>
       </main>
-    </div>
-  )
-}
-
-function StatCard({
-  title,
-  value,
-  icon,
-  color,
-}: {
-  title: string
-  value: number
-  icon: string
-  color: string
-}) {
-  const colorClasses = {
-    blue: 'bg-blue-100 border-blue-200 text-blue-800',
-    green: 'bg-emerald-100 border-emerald-200 text-emerald-800',
-    purple: 'bg-purple-100 border-purple-200 text-purple-800',
-    red: 'bg-red-100 border-red-200 text-red-800',
-  }
-
-  return (
-    <div className={`glass p-6 rounded-lg border ${colorClasses[color as keyof typeof colorClasses]}`}>
-      <div className="flex items-center justify-between">
-        <div>
-          <p className="text-gray-700 text-sm">{title}</p>
-          <p className="text-3xl font-bold mt-2 text-[#1f1a17]">{value}</p>
-        </div>
-        <span className="text-4xl">{icon}</span>
-      </div>
-    </div>
-  )
-}
-
-function StatusItem({ label, status }: { label: string; status: 'online' | 'offline' }) {
-  return (
-    <div className="flex items-center justify-between py-2">
-      <span className="text-gray-800">{label}</span>
-      <span className={`flex items-center space-x-2 text-sm ${status === 'online' ? 'text-emerald-700' : 'text-red-700'}`}>
-        <span className={`w-2 h-2 rounded-full ${status === 'online' ? 'bg-emerald-600' : 'bg-red-600'}`}></span>
-        <span>{status}</span>
-      </span>
     </div>
   )
 }
