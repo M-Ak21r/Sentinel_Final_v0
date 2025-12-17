@@ -49,6 +49,21 @@ ASSET_CLASSES = {CLASS_LAPTOP, CLASS_CELL_PHONE}
 # Theft detection configuration
 FRAMES_UNTIL_THEFT = 30  # Asset must be missing for 30 frames (~1 second)
 PROXIMITY_THRESHOLD = 150  # Pixels - how close a person must be to the asset
+STALE_ASSET_MULTIPLIER = 3  # Multiplier for determining when to clean up stale assets
+
+# Alert level constants
+ALERT_LEVEL_CRITICAL = 1
+ALERT_LEVEL_WARNING = 2
+ALERT_LEVEL_INFO = 3
+
+# Video recording constants
+EVIDENCE_FILENAME_PREFIX = "theft_evidence"
+
+# Visualization constants
+FLASH_INTERVAL_FRAMES = 10  # Flash every N frames
+ALARM_OVERLAY_HEIGHT = 60  # Height of alarm overlay in pixels
+ALARM_OVERLAY_ALPHA = 0.3  # Transparency of alarm overlay
+ALARM_BACKGROUND_ALPHA = 0.7  # Transparency of background when alarm is active
 
 
 class InteriorWatchService:
@@ -249,7 +264,7 @@ class InteriorWatchService:
             return
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"theft_evidence_{timestamp}.mp4"
+        filename = f"{EVIDENCE_FILENAME_PREFIX}_{timestamp}.mp4"
         self.current_recording_path = os.path.join(self.evidence_dir, filename)
         
         # Create video writer
@@ -433,7 +448,7 @@ class InteriorWatchService:
                                             
                                             # Publish MQTT alert
                                             self._publish_alert(
-                                                level=2,
+                                                level=ALERT_LEVEL_WARNING,
                                                 alert_type="THEFT",
                                                 message=f"Theft detected! Asset {asset_id} taken by unauthorized person"
                                             )
@@ -447,7 +462,7 @@ class InteriorWatchService:
                                     logger.info(f"Asset {asset_id} disappeared but no suspect nearby")
                         
                         # Clean up old asset states (missing for too long)
-                        if asset_info['missing_frames'] > FRAMES_UNTIL_THEFT * 3:
+                        if asset_info['missing_frames'] > FRAMES_UNTIL_THEFT * STALE_ASSET_MULTIPLIER:
                             logger.info(f"Removing stale asset {asset_id} from tracking")
                             del self.asset_states[asset_id]
             
@@ -467,11 +482,11 @@ class InteriorWatchService:
         # Flash "ALARM TRIGGERED" if alarm is active
         if self.alarm_active:
             # Create a flashing effect
-            if (self.frame_count // 10) % 2 == 0:  # Flash every 10 frames
+            if (self.frame_count // FLASH_INTERVAL_FRAMES) % 2 == 0:  # Flash every N frames
                 # Draw red overlay
                 overlay = annotated_frame.copy()
-                cv2.rectangle(overlay, (0, 0), (annotated_frame.shape[1], 60), (0, 0, 255), -1)
-                cv2.addWeighted(overlay, 0.3, annotated_frame, 0.7, 0, annotated_frame)
+                cv2.rectangle(overlay, (0, 0), (annotated_frame.shape[1], ALARM_OVERLAY_HEIGHT), (0, 0, 255), -1)
+                cv2.addWeighted(overlay, ALARM_OVERLAY_ALPHA, annotated_frame, ALARM_BACKGROUND_ALPHA, 0, annotated_frame)
                 
                 # Draw text
                 text = "!!! ALARM TRIGGERED !!!"
@@ -531,10 +546,12 @@ class InteriorWatchService:
                     # Parse timestamp from filename
                     try:
                         # Format: theft_evidence_YYYYMMDD_HHMMSS.mp4
-                        timestamp_str = filename.replace('theft_evidence_', '').replace('.mp4', '')
+                        timestamp_str = filename.replace(f'{EVIDENCE_FILENAME_PREFIX}_', '').replace('.mp4', '')
                         timestamp = datetime.strptime(timestamp_str, '%Y%m%d_%H%M%S')
                         timestamp_iso = timestamp.isoformat()
-                    except:
+                    except Exception as e:
+                        # Fallback to file modification time if parsing fails
+                        logger.debug(f"Failed to parse timestamp from filename {filename}: {e}")
                         timestamp_iso = datetime.fromtimestamp(stat.st_mtime).isoformat()
                     
                     recordings.append({
