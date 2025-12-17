@@ -46,6 +46,9 @@ class FaceAuthenticator:
         logger (logging.Logger): Logger instance
     """
     
+    # Supported image file extensions
+    VALID_IMAGE_EXTENSIONS = {'.jpg', '.jpeg', '.png', '.bmp'}
+    
     def __init__(
         self,
         data_path: Optional[str] = None,
@@ -241,9 +244,6 @@ class FaceAuthenticator:
             self.logger.warning(f"Data path does not exist: {self.data_path}")
             return
         
-        # Supported image extensions
-        valid_extensions = {'.jpg', '.jpeg', '.png', '.bmp'}
-        
         # Iterate through person directories
         person_dirs = [d for d in self.data_path.iterdir() if d.is_dir()]
         
@@ -258,10 +258,10 @@ class FaceAuthenticator:
             # Collect all embeddings for this person
             embeddings = []
             
-            # Find all image files
+            # Find all image files using class constant
             image_files = [
                 f for f in person_dir.iterdir()
-                if f.is_file() and f.suffix.lower() in valid_extensions
+                if f.is_file() and f.suffix.lower() in self.VALID_IMAGE_EXTENSIONS
             ]
             
             if not image_files:
@@ -285,12 +285,24 @@ class FaceAuthenticator:
                         continue
                     
                     # Use the first (and hopefully only) face
+                    if len(faces) > 1:
+                        self.logger.warning(
+                            f"Multiple faces ({len(faces)}) detected in {image_file}, "
+                            f"using first face only"
+                        )
+                    
                     face = faces[0]
                     embedding = face.embedding
                     
-                    # Normalize embedding
-                    embedding = embedding / np.linalg.norm(embedding)
-                    embeddings.append(embedding)
+                    # Normalize embedding (check for zero norm)
+                    embedding_norm = np.linalg.norm(embedding)
+                    if embedding_norm > 0:
+                        embedding = embedding / embedding_norm
+                        embeddings.append(embedding)
+                    else:
+                        self.logger.warning(
+                            f"Zero embedding norm in {image_file}, skipping"
+                        )
                     
                 except Exception as e:
                     self.logger.error(f"Error processing {image_file}: {e}")
@@ -300,14 +312,20 @@ class FaceAuthenticator:
                 # Compute centroid (mean) embedding
                 centroid = np.mean(embeddings, axis=0)
                 
-                # Normalize the centroid
-                centroid = centroid / np.linalg.norm(centroid)
-                
-                self.known_faces[person_name] = centroid
-                self.logger.info(
-                    f"Created centroid embedding for {person_name} "
-                    f"from {len(embeddings)} images"
-                )
+                # Normalize the centroid (check for zero norm)
+                centroid_norm = np.linalg.norm(centroid)
+                if centroid_norm > 0:
+                    centroid = centroid / centroid_norm
+                    
+                    self.known_faces[person_name] = centroid
+                    self.logger.info(
+                        f"Created centroid embedding for {person_name} "
+                        f"from {len(embeddings)} images"
+                    )
+                else:
+                    self.logger.warning(
+                        f"Zero centroid norm for {person_name}, skipping"
+                    )
             else:
                 self.logger.warning(f"No valid embeddings extracted for {person_name}")
         
@@ -391,9 +409,16 @@ class FaceAuthenticator:
                 bbox = face.bbox.astype(int)
                 x1, y1, x2, y2 = bbox
                 
-                # Anatomical filtering: Check face size
+                # Anatomical filtering: Check face size and aspect ratio
                 face_width = x2 - x1
                 face_height = y2 - y1
+                
+                # Check for invalid dimensions early
+                if face_height <= 0 or face_width <= 0:
+                    self.logger.debug(
+                        f"Ignoring face with invalid dimensions: {face_width}x{face_height}"
+                    )
+                    continue
                 
                 if face_width < self.min_face_size[0] or face_height < self.min_face_size[1]:
                     self.logger.debug(
@@ -403,7 +428,7 @@ class FaceAuthenticator:
                     continue
                 
                 # Anatomical filtering: Check aspect ratio (optional)
-                aspect_ratio = face_width / face_height if face_height > 0 else 0
+                aspect_ratio = face_width / face_height
                 if aspect_ratio < 0.5 or aspect_ratio > 2.0:
                     self.logger.debug(
                         f"Ignoring face with extreme aspect ratio: {aspect_ratio:.2f}"
@@ -412,7 +437,14 @@ class FaceAuthenticator:
                 
                 # Extract and normalize embedding
                 embedding = face.embedding
-                embedding = embedding / np.linalg.norm(embedding)
+                
+                # Normalize embedding (check for zero norm)
+                embedding_norm = np.linalg.norm(embedding)
+                if embedding_norm > 0:
+                    embedding = embedding / embedding_norm
+                else:
+                    self.logger.warning("Detected face has zero embedding norm, skipping")
+                    continue
                 
                 # Find best match
                 best_name = "Unknown"
