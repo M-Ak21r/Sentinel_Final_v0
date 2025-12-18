@@ -184,6 +184,7 @@ class InteriorWatchService:
         
         Listens for commands like:
         {"target": "interior", "action": "STOP_ALARM"}
+        {"target": "all", "action": "RELOAD_FACES"}
         """
         try:
             payload = json.loads(msg.payload.decode('utf-8'))
@@ -205,6 +206,12 @@ class InteriorWatchService:
                         logger.info(f"Recording stopped: {self.current_recording_path}")
                     
                     logger.info("Alarm silenced by user")
+            
+            # Check if this command is for all services (hot-reload faces)
+            elif payload.get('target') == 'all' and payload.get('action') == 'RELOAD_FACES':
+                logger.info("[System] Hot-reloading face database...")
+                self.auth.reload_faces()
+                logger.info(f"[System] Face database reloaded: {len(self.auth.get_known_faces())} faces")
                     
         except json.JSONDecodeError:
             logger.warning(f"Failed to decode MQTT message: {msg.payload}")
