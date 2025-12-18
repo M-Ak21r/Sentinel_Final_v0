@@ -25,6 +25,24 @@ export async function POST(request: NextRequest) {
       )
     }
 
+    // Validate file type
+    const validTypes = ['image/jpeg', 'image/jpg', 'image/png']
+    if (!validTypes.includes(file.type)) {
+      return NextResponse.json(
+        { success: false, message: 'Invalid file type. Only JPG and PNG images are allowed.' },
+        { status: 400 }
+      )
+    }
+
+    // Validate file size (max 5MB)
+    const maxSize = 5 * 1024 * 1024 // 5MB in bytes
+    if (file.size > maxSize) {
+      return NextResponse.json(
+        { success: false, message: 'File too large. Maximum size is 5MB.' },
+        { status: 400 }
+      )
+    }
+
     // Sanitize the name
     let sanitizedName = name.trim()
     // Replace spaces with underscores
