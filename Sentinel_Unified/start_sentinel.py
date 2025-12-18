@@ -21,7 +21,6 @@ import threading
 import signal
 import time
 import socket
-import platform
 from pathlib import Path
 
 
@@ -46,6 +45,11 @@ class SystemOrchestrator:
     - Log aggregation with color-coded output
     - Graceful shutdown
     """
+    
+    # Configuration constants
+    MQTT_WARNING_WAIT_SECONDS = 5
+    SHUTDOWN_TIMEOUT_SECONDS = 10
+    MONITOR_INTERVAL_SECONDS = 1
     
     def __init__(self):
         """Initialize the orchestrator."""
@@ -133,24 +137,22 @@ class SystemOrchestrator:
         print("  - Service communication")
         print()
         
-        if platform.system() == 'Linux':
+        if os.name == 'nt':  # Windows
+            print("To start Mosquitto on Windows:")
+            print("  Run 'mosquitto' from command prompt")
+            print("  OR install as a service")
+        else:  # Linux/Unix
             print("To start Mosquitto on Linux:")
             print("  sudo systemctl start mosquitto")
             print("  OR")
             print("  mosquitto -v")
-        elif platform.system() == 'Windows':
-            print("To start Mosquitto on Windows:")
-            print("  Run 'mosquitto' from command prompt")
-            print("  OR install as a service")
-        else:
-            print("Please start your MQTT broker (Mosquitto) manually.")
         
         print("=" * 70)
         print(f"{Colors.RESET}")
         
         # Give user a chance to start it
-        print(f"{Colors.YELLOW}[SYSTEM] Waiting 5 seconds before continuing...{Colors.RESET}")
-        time.sleep(5)
+        print(f"{Colors.YELLOW}[SYSTEM] Waiting {self.MQTT_WARNING_WAIT_SECONDS} seconds before continuing...{Colors.RESET}")
+        time.sleep(self.MQTT_WARNING_WAIT_SECONDS)
     
     def stream_process_output(self, process, prefix, color):
         """
@@ -266,8 +268,8 @@ class SystemOrchestrator:
             print(f"{Colors.RED}[SYSTEM] ✗ {service_name} not found at {path}{Colors.RESET}")
             return
         
-        # Determine npm command based on OS
-        npm_cmd = 'npm.cmd' if platform.system() == 'Windows' else 'npm'
+        # Determine npm command based on OS (nt = Windows)
+        npm_cmd = 'npm.cmd' if os.name == 'nt' else 'npm'
         
         print(f"{Colors.YELLOW}[SYSTEM] Starting {service_name}...{Colors.RESET}")
         
@@ -316,12 +318,12 @@ class SystemOrchestrator:
                         del self.processes[service_name]
                 
                 # Sleep briefly before next check
-                time.sleep(1)
+                time.sleep(self.MONITOR_INTERVAL_SECONDS)
                 
             except Exception as e:
                 if self.running:
                     print(f"{Colors.RED}[SYSTEM] Error in monitor loop: {e}{Colors.RESET}")
-                    time.sleep(1)
+                    time.sleep(self.MONITOR_INTERVAL_SECONDS)
     
     def shutdown(self):
         """
@@ -345,7 +347,7 @@ class SystemOrchestrator:
                 print(f"{Colors.RED}[SYSTEM] Error terminating {service_name}: {e}{Colors.RESET}")
         
         # Wait for processes to exit (with timeout)
-        timeout = 10  # seconds
+        timeout = self.SHUTDOWN_TIMEOUT_SECONDS
         start_time = time.time()
         
         while self.processes and (time.time() - start_time) < timeout:
