@@ -48,7 +48,9 @@ class SystemOrchestrator:
     
     # Configuration constants
     MQTT_WARNING_WAIT_SECONDS = 5
+    MQTT_CONNECTION_TIMEOUT_SECONDS = 2
     SHUTDOWN_TIMEOUT_SECONDS = 10
+    SHUTDOWN_POLL_INTERVAL_SECONDS = 0.5
     MONITOR_INTERVAL_SECONDS = 1
     
     def __init__(self):
@@ -108,7 +110,7 @@ class SystemOrchestrator:
         try:
             # Try to connect to MQTT broker port
             sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(2)
+            sock.settimeout(self.MQTT_CONNECTION_TIMEOUT_SECONDS)
             result = sock.connect_ex(('localhost', 1883))
             sock.close()
             
@@ -353,7 +355,7 @@ class SystemOrchestrator:
         while self.processes and (time.time() - start_time) < timeout:
             for service_name, process in list(self.processes.items()):
                 try:
-                    process.wait(timeout=0.5)
+                    process.wait(timeout=self.SHUTDOWN_POLL_INTERVAL_SECONDS)
                     print(f"{Colors.GREEN}[SYSTEM] ✓ {service_name} stopped{Colors.RESET}")
                     del self.processes[service_name]
                 except subprocess.TimeoutExpired:
