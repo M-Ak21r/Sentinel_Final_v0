@@ -143,6 +143,13 @@ class DoorSentry:
             if msg.get('target') == 'door' and msg.get('command') == 'UNLOCK':
                 logger.info("Received manual UNLOCK command via MQTT")
                 self._publish_unlock(user="Manual Override")
+            
+            # Check if this command is for all services (hot-reload faces)
+            elif msg.get('target') == 'all' and msg.get('action') == 'RELOAD_FACES':
+                print(f"[{self.__class__.__name__}] Command received: Reloading faces...")
+                logger.info("[System] Hot-reloading face database...")
+                self.auth.reload_faces()
+                logger.info(f"[System] Face database reloaded: {len(self.auth.get_known_faces())} faces")
         except Exception as e:
             logger.error(f"Error in mqtt_callback: {e}")
     
