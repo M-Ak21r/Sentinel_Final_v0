@@ -70,7 +70,7 @@ class SystemOrchestrator:
             },
             'Web_Interface': {
                 'type': 'npm',
-                'path': self.base_dir.parent / 'Web-Interface',
+                'path': self.base_dir / 'Web_Interface',
                 'prefix': 'WEB',
                 'color': Colors.CYAN
             }
