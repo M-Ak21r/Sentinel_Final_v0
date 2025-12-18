@@ -40,10 +40,9 @@ export async function POST(request: NextRequest) {
     }
 
     // Resolve the Shared Data path relative to process.cwd()
-    // From Web_Interface root, go up two levels to Sentinel_Unified, then to Shared/data/authorized_faces
+    // From Web_Interface root, go up one level to Sentinel_Unified, then to Shared/data/authorized_faces
     const sharedDataPath = path.join(
       process.cwd(),
-      '..',
       '..',
       'Shared',
       'data',
