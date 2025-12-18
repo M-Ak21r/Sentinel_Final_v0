@@ -209,6 +209,7 @@ class InteriorWatchService:
             
             # Check if this command is for all services (hot-reload faces)
             elif payload.get('target') == 'all' and payload.get('action') == 'RELOAD_FACES':
+                print(f"[{self.__class__.__name__}] Command received: Reloading faces...")
                 logger.info("[System] Hot-reloading face database...")
                 self.auth.reload_faces()
                 logger.info(f"[System] Face database reloaded: {len(self.auth.get_known_faces())} faces")

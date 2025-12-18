@@ -75,8 +75,8 @@ export async function POST(request: NextRequest) {
     const arrayBuffer = await file.arrayBuffer()
     const buffer = Buffer.from(arrayBuffer)
 
-    // Save the file as reference.jpg
-    const filePath = path.join(sharedDataPath, 'reference.jpg')
+    // Save the file as image.jpg
+    const filePath = path.join(sharedDataPath, 'image.jpg')
     await fs.writeFile(filePath, buffer)
 
     console.log(`[Face Upload] Saved face image for ${sanitizedName} at ${filePath}`)
