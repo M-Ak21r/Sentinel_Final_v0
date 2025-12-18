@@ -38,6 +38,10 @@ node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+*.tsbuildinfo
+
+# Test data (uploaded faces for testing)
+Sentinel_Unified/Shared/data/authorized_faces/John_Doe/
 
 # IDE
 .vscode/
