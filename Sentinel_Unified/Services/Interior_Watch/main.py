@@ -98,6 +98,7 @@ class InteriorWatchService:
         self.video_writer = None
         self.current_recording_path = None
         self.running = False
+        self.process_every_n_frames = 2  # Process YOLO every 2nd frame for better FPS
         
         # Initialize FaceAuthenticator
         logger.info("Initializing FaceAuthenticator...")
@@ -340,9 +341,11 @@ class InteriorWatchService:
         self.frame_count += 1
         annotated_frame = frame.copy()
         
-        # Step 1: YOLO Tracking
-        try:
-            results = self.model.track(frame, persist=True, verbose=False)
+        # Step 1: YOLO Tracking (skip frames for better FPS)
+        # Only process detection every Nth frame, but always stream
+        if self.frame_count % self.process_every_n_frames == 0:
+            try:
+                results = self.model.track(frame, persist=True, verbose=False)
             
             if results and len(results) > 0:
                 result = results[0]
@@ -482,10 +485,21 @@ class InteriorWatchService:
             self.video_writer.write(annotated_frame)
         
         # Step 5: Visualization
+            except Exception as e:
+                logger.error(f"Error during YOLO tracking: {e}")
+        else:
+            # Frame skipped - just stream without detection
+            pass
+        
         # Add timestamp
         timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        cv2.putText(annotated_frame, timestamp_text, (10, annotated_frame.shape[0] - 10),
+        cv2.putText(annotated_frame, timestamp_text, (10, annotated_frame.shape[0] - 40),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+        
+        # Add FPS counter for monitoring performance
+        fps_text = f"Frame: {self.frame_count} (Processing every {self.process_every_n_frames})"
+        cv2.putText(annotated_frame, fps_text, (10, annotated_frame.shape[0] - 10),
+                   cv2.FONT_HERSHEY_SIMPLEX, 0.4, (0, 255, 255), 1)
         
         # Flash "ALARM TRIGGERED" if alarm is active
         if self.alarm_active:
@@ -503,8 +517,8 @@ class InteriorWatchService:
                 cv2.putText(annotated_frame, text, (text_x, 40),
                            cv2.FONT_HERSHEY_SIMPLEX, 1.2, (255, 255, 255), 3)
         
-        # Encode frame as JPEG
-        ret, jpeg = cv2.imencode('.jpg', annotated_frame)
+        # Encode frame as JPEG with optimized quality (70% instead of default 95%)
+        ret, jpeg = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
         if not ret:
             logger.warning("Failed to encode frame as JPEG")
             return None

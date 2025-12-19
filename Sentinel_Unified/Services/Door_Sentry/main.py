@@ -67,6 +67,9 @@ class DoorSentry:
         self.last_unlock_time = 0
         self.unknown_face_start_time = None
         self.running = False
+        self.frame_count = 0
+        self.process_every_n_frames = 3  # Process detection every 3rd frame for better FPS
+        self.last_faces = []  # Cache last detection results
         
         # Initialize FaceAuthenticator
         logger.info("Initializing FaceAuthenticator...")
@@ -234,14 +237,27 @@ class DoorSentry:
             logger.warning("Failed to read frame from camera")
             return None
         
+        self.frame_count += 1
+        
         # Create a copy for annotation
         annotated_frame = frame.copy()
         current_time = time.time()
         
-        # Perform face identification
+        # Perform face identification only every Nth frame for performance
+        faces = []
+        if self.frame_count % self.process_every_n_frames == 0:
+            try:
+                faces = self.auth.identify_face(frame)
+                self.last_faces = faces  # Cache results
+            except Exception as e:
+                logger.error(f"Face identification error: {e}")
+                faces = []
+        else:
+            # Use cached results from last detection
+            faces = self.last_faces
+        
+        # Process detected faces
         try:
-            faces = self.auth.identify_face(frame)
-            
             if faces:
                 has_unknown = False
                 
@@ -324,15 +340,27 @@ class DoorSentry:
         cv2.putText(
             annotated_frame,
             timestamp_text,
-            (10, annotated_frame.shape[0] - 10),
+            (10, annotated_frame.shape[0] - 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
             (255, 255, 255),
             1
         )
         
-        # Encode frame as JPEG
-        ret, jpeg = cv2.imencode('.jpg', annotated_frame)
+        # Add FPS counter for monitoring performance
+        fps_text = f"Frame: {self.frame_count} (Processing every {self.process_every_n_frames})"
+        cv2.putText(
+            annotated_frame,
+            fps_text,
+            (10, annotated_frame.shape[0] - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (0, 255, 255),
+            1
+        )
+        
+        # Encode frame to JPEG with optimized quality (70% instead of default 95%)
+        ret, jpeg = cv2.imencode('.jpg', annotated_frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
         if not ret:
             logger.warning("Failed to encode frame as JPEG")
             return None
