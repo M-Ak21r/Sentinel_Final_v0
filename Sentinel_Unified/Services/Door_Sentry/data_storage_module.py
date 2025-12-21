@@ -1,28 +1,25 @@
-import json
-import csv
 import os
 import sys
-import sqlite3
+import json
+import base64
 from datetime import datetime
 import logging
-import pickle
 import cv2
 
 # Add parent directory to path for shared modules
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'Shared'))
 from libs.file_utils import (
-    FileLock, atomic_write_json, atomic_append_csv, safe_read_json,
     safe_image_write, safe_video_writer, ensure_directory
 )
+from database.mongo_manager import MongoManager
 
 class DataStorage:
     def __init__(self):
         self.logger = self.setup_logging()
-        self.db_file = "security_system.db"
-        self.events_file = "security_events.json"
-        self.alerts_file = "alerts_log.csv"
         
-        self.setup_database()
+        # Initialize MongoDB connection
+        self.mongo = MongoManager()
+        
         self.setup_storage()
     
     def setup_logging(self):
@@ -37,137 +34,136 @@ class DataStorage:
         )
         return logging.getLogger(__name__)
     
-    def setup_database(self):
-        """Initialize SQLite database"""
-        try:
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-            
-            # Create events table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS security_events (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    event_type TEXT NOT NULL,
-                    person_name TEXT,
-                    confidence REAL,
-                    camera_location TEXT,
-                    additional_info TEXT
-                )
-            ''')
-            
-            # Create alerts table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS alerts (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    alert_type TEXT NOT NULL,
-                    severity TEXT,
-                    description TEXT,
-                    action_taken TEXT,
-                    resolved BOOLEAN DEFAULT FALSE
-                )
-            ''')
-            
-            # Create face logs table
-            cursor.execute('''
-                CREATE TABLE IF NOT EXISTS face_recognition_logs (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    timestamp TEXT NOT NULL,
-                    recognized_name TEXT,
-                    confidence REAL,
-                    image_path TEXT,
-                    camera_id INTEGER
-                )
-            ''')
-            
-            conn.commit()
-            conn.close()
-            self.logger.info("Database setup completed")
-            
-        except Exception as e:
-            self.logger.error(f"Error setting up database: {e}")
-    
     def setup_storage(self):
-        """Setup file-based storage"""
+        """Setup file-based storage for evidence"""
         try:
             # Create directories for storing evidence
-            directories = ['evidence/images', 'evidence/videos', 'evidence/gesture_queue/incoming', 'evidence/gesture_queue/processed', 'evidence/gesture_queue/results', 'logs']
+            directories = ['evidence/images', 'evidence/videos']
             for directory in directories:
                 ensure_directory(directory)
-            
-            # Initialize CSV file with headers if it doesn't exist
-            if not os.path.exists(self.alerts_file):
-                with open(self.alerts_file, 'w', newline='') as file:
-                    writer = csv.writer(file)
-                    writer.writerow(['Timestamp', 'Alert Type', 'Severity', 'Description', 'Location', 'Action Taken'])
             
             self.logger.info("File storage setup completed")
             
         except Exception as e:
             self.logger.error(f"Error setting up file storage: {e}")
     
-    def log_security_event(self, event_type, person_name=None, confidence=0, location="front_door", info=""):
-        """Log security events to database and JSON"""
+    def _get_base64_image(self, file_path):
+        """
+        Convert an image file to Base64 data URI.
+        
+        Prefers thumbnail version (_thumb.jpg) for smaller payload.
+        Falls back to original if thumbnail doesn't exist.
+        
+        Args:
+            file_path: Path to the image file
+            
+        Returns:
+            str: Base64 data URI (data:image/jpeg;base64,...) or None
+        """
+        if not file_path:
+            return None
+        
         try:
-            timestamp = datetime.now().isoformat()
+            # Try thumbnail first (smaller file size)
+            thumb_path = file_path.replace('.jpg', '_thumb.jpg')
             
-            # Database logging
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
+            if os.path.exists(thumb_path):
+                with open(thumb_path, 'rb') as f:
+                    image_data = f.read()
+                    encoded = base64.b64encode(image_data).decode('utf-8')
+                    return f"data:image/jpeg;base64,{encoded}"
             
-            cursor.execute('''
-                INSERT INTO security_events (timestamp, event_type, person_name, confidence, camera_location, additional_info)
-                VALUES (?, ?, ?, ?, ?, ?)
-            ''', (timestamp, event_type, person_name, confidence, location, info))
+            # Fallback to original image
+            elif os.path.exists(file_path):
+                with open(file_path, 'rb') as f:
+                    image_data = f.read()
+                    encoded = base64.b64encode(image_data).decode('utf-8')
+                    return f"data:image/jpeg;base64,{encoded}"
             
-            conn.commit()
-            conn.close()
+            else:
+                self.logger.warning(f"Image file not found: {file_path}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Error encoding image to Base64: {e}")
+            return None
+    
+    def log_security_event(self, event_type, person_name=None, confidence=0, location="front_door", info="", image_path=None):
+        """Log security events to MongoDB"""
+        try:
+            # Get events collection
+            events_collection = self.mongo.get_collection('events')
             
-            # JSON logging with atomic write and file locking
-            event_data = {
-                'timestamp': timestamp,
-                'event_type': event_type,
-                'person_name': person_name,
-                'confidence': confidence,
-                'location': location,
-                'additional_info': info
+            if events_collection is None:
+                self.logger.error("Failed to get events collection from MongoDB in log_security_event() (check connection status)")
+                return
+            
+            # Generate Base64 snapshot if image path provided
+            snapshot_url = None
+            if image_path:
+                snapshot_url = self._get_base64_image(image_path)
+            
+            # Create document matching Web Interface schema
+            event_document = {
+                "topic": "security/door/event",
+                "level": "level1",
+                "cameraId": location,
+                "model": "face_auth",
+                "event": event_type,
+                "confidence": confidence,
+                "snapshotUrl": snapshot_url,
+                "status": f"Detected {person_name}" if person_name else event_type,
+                "raw": {
+                    "person_name": person_name,
+                    "info": info
+                },
+                "createdAt": datetime.now()
             }
             
-            # Append to JSON file atomically
-            events = safe_read_json(self.events_file, default=[])
-            events.append(event_data)
-            atomic_write_json(self.events_file, events)
-            
-            self.logger.info(f"Security event logged: {event_type} - {person_name}")
+            # Insert into MongoDB
+            result = events_collection.insert_one(event_document)
+            self.logger.info(f"Security event logged to MongoDB: {event_type} - {person_name} (ID: {result.inserted_id})")
             
         except Exception as e:
             self.logger.error(f"Error logging security event: {e}")
     
-    def log_alert(self, alert_type, severity, description, action_taken=""):
-        """Log alerts to database and CSV"""
+    def log_alert(self, alert_type, severity, description, action_taken="", image_path=None):
+        """Log alerts to MongoDB with level3 (Critical)"""
         try:
-            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            # Get events collection
+            events_collection = self.mongo.get_collection('events')
             
-            # Database logging
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
+            if events_collection is None:
+                self.logger.error("Failed to get events collection from MongoDB in log_alert() (check connection status)")
+                return
             
-            cursor.execute('''
-                INSERT INTO alerts (timestamp, alert_type, severity, description, action_taken)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (timestamp, alert_type, severity, description, action_taken))
+            # Generate Base64 snapshot if image path provided
+            snapshot_url = None
+            if image_path:
+                snapshot_url = self._get_base64_image(image_path)
             
-            conn.commit()
-            conn.close()
+            # Create document for critical alert
+            alert_document = {
+                "topic": "security/door/event",
+                "level": "level3",  # Critical
+                "cameraId": "front_door",
+                "model": "face_auth",
+                "event": f"ALERT: {alert_type}",
+                "confidence": None,
+                "snapshotUrl": snapshot_url,
+                "status": description,
+                "raw": {
+                    "alert_type": alert_type,
+                    "severity": severity,
+                    "description": description,
+                    "action_taken": action_taken
+                },
+                "createdAt": datetime.now()
+            }
             
-            # CSV logging with atomic append and file locking
-            atomic_append_csv(
-                self.alerts_file,
-                [timestamp, alert_type, severity, description, "front_door", action_taken]
-            )
-            
-            self.logger.warning(f"Alert logged: {alert_type} - {severity} - {description}")
+            # Insert into MongoDB
+            result = events_collection.insert_one(alert_document)
+            self.logger.warning(f"Alert logged to MongoDB: {alert_type} - {severity} - {description} (ID: {result.inserted_id})")
             
         except Exception as e:
             self.logger.error(f"Error logging alert: {e}")
@@ -189,17 +185,15 @@ class DataStorage:
             if not safe_image_write(filename.replace(".jpg", "_thumb.jpg"), thumbnail, cv2):
                 self.logger.warning(f"Failed to save thumbnail for: {filename}")
             
-            # Log in database
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                INSERT INTO face_recognition_logs (timestamp, recognized_name, confidence, image_path, camera_id)
-                VALUES (?, ?, ?, ?, ?)
-            ''', (datetime.now().isoformat(), person_name, 0, filename, 1))
-            
-            conn.commit()
-            conn.close()
+            # Log the evidence save to MongoDB
+            self.log_security_event(
+                event_type=f"EVIDENCE_SAVED_{event_type}",
+                person_name=person_name,
+                confidence=None,  # Not applicable for evidence logging
+                location="front_door",
+                info=f"Saved image: {filename}",
+                image_path=filename
+            )
             
             return filename
             
@@ -243,8 +237,14 @@ class DataStorage:
             thumb_name = filename.replace('.avi', '_thumb.jpg')
             safe_image_write(thumb_name, thumb, cv2)
 
-            # Log as security event
-            self.log_security_event(f"VIDEO_{event_type}", person_name, 0, "front_door", f"Saved clip: {filename}")
+            # Log the evidence save to MongoDB
+            self.log_security_event(
+                event_type=f"VIDEO_{event_type}",
+                person_name=person_name,
+                confidence=None,  # Not applicable for evidence logging
+                location="front_door",
+                info=f"Saved clip: {filename}"
+            )
 
             self.logger.info(f"Saved evidence clip: {filename}")
             return filename
@@ -288,79 +288,4 @@ class DataStorage:
             return dest
         except Exception as e:
             self.logger.error(f"Error queueing clip for gesture: {e}")
-            return None
-
-    def get_recent_events(self, limit=10):
-        """Retrieve recent security events"""
-        try:
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT * FROM security_events 
-                ORDER BY timestamp DESC 
-                LIMIT ?
-            ''', (limit,))
-            
-            events = cursor.fetchall()
-            conn.close()
-            
-            return events
-            
-        except Exception as e:
-            self.logger.error(f"Error retrieving events: {e}")
-            return []
-    
-    def get_alerts_by_severity(self, severity):
-        """Get alerts by severity level"""
-        try:
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT * FROM alerts 
-                WHERE severity = ? AND resolved = FALSE
-                ORDER BY timestamp DESC
-            ''', (severity,))
-            
-            alerts = cursor.fetchall()
-            conn.close()
-            
-            return alerts
-            
-        except Exception as e:
-            self.logger.error(f"Error retrieving alerts: {e}")
-            return []
-    
-    def export_data(self, start_date, end_date, export_format='json'):
-        """Export data for specified date range"""
-        try:
-            conn = sqlite3.connect(self.db_file)
-            cursor = conn.cursor()
-            
-            cursor.execute('''
-                SELECT * FROM security_events 
-                WHERE timestamp BETWEEN ? AND ?
-                ORDER BY timestamp
-            ''', (start_date, end_date))
-            
-            events = cursor.fetchall()
-            conn.close()
-            
-            if export_format == 'json':
-                export_file = f"export_events_{start_date}_{end_date}.json"
-                with open(export_file, 'w') as f:
-                    json.dump(events, f, indent=2)
-            elif export_format == 'csv':
-                export_file = f"export_events_{start_date}_{end_date}.csv"
-                with open(export_file, 'w', newline='') as f:
-                    writer = csv.writer(f)
-                    writer.writerow(['ID', 'Timestamp', 'Event Type', 'Person', 'Confidence', 'Location', 'Info'])
-                    writer.writerows(events)
-            
-            self.logger.info(f"Data exported to {export_file}")
-            return export_file
-            
-        except Exception as e:
-            self.logger.error(f"Error exporting data: {e}")
             return None

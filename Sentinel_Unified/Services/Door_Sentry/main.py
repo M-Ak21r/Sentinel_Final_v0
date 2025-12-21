@@ -24,6 +24,7 @@ from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
 
 from Sentinel_Unified.Shared.libs.face_auth import FaceAuthenticator
+from data_storage_module import DataStorage
 
 
 # Load environment variables from root .env file
@@ -83,6 +84,16 @@ class DoorSentry:
         except Exception as e:
             logger.error(f"Failed to initialize FaceAuthenticator: {e}")
             raise
+        
+        # Initialize DataStorage
+        logger.info("Initializing DataStorage...")
+        try:
+            self.storage = DataStorage()
+            logger.info("DataStorage initialized successfully")
+        except Exception as e:
+            logger.error(f"Failed to initialize DataStorage: {e}")
+            logger.warning("DataStorage initialization failed - security events and alerts will not be persisted to MongoDB")
+            self.storage = None
         
         # Initialize camera
         logger.info(f"Opening camera (index: {self.camera_index})...")
@@ -289,6 +300,19 @@ class DoorSentry:
                         if current_time - self.last_unlock_time > self.UNLOCK_RATE_LIMIT_SECONDS:
                             self._publish_unlock(user=name)
                             self.last_unlock_time = current_time
+                            
+                            # Log successful access to database
+                            if self.storage is not None:
+                                try:
+                                    self.storage.log_security_event(
+                                        event_type="access_granted",
+                                        person_name=name,
+                                        confidence=confidence,
+                                        location="front_door",
+                                        info="Face authenticated"
+                                    )
+                                except Exception as e:
+                                    logger.error(f"Failed to log security event: {e}")
                         
                         # Reset unknown face timer and alert flag
                         self.unknown_face_start_time = None
@@ -308,11 +332,37 @@ class DoorSentry:
                             duration = current_time - self.unknown_face_start_time
                             # Only publish alert once per intruder detection
                             if duration > self.INTRUDER_ALERT_THRESHOLD_SECONDS and not self.intruder_alert_sent:
+                                # Save evidence first
+                                evidence_file = None
+                                if self.storage is not None:
+                                    try:
+                                        evidence_file = self.storage.save_evidence_image(annotated_frame, "INTRUDER", "unknown")
+                                    except Exception as e:
+                                        logger.error(f"Failed to save evidence image: {e}")
+                                
+                                # Publish MQTT alert
                                 self._publish_alert(
                                     level="critical",
                                     message="Intruder at door"
                                 )
                                 self.intruder_alert_sent = True  # Mark alert as sent
+                                
+                                # Log intruder alert to database with evidence reference
+                                if self.storage is not None:
+                                    try:
+                                        description = "Unknown person detected at front door"
+                                        if evidence_file:
+                                            description += f". Evidence saved at {evidence_file}"
+                                        
+                                        self.storage.log_alert(
+                                            alert_type="INTRUDER_DETECTED",
+                                            severity="critical",
+                                            description=description,
+                                            action_taken="Alert published",
+                                            image_path=evidence_file
+                                        )
+                                    except Exception as e:
+                                        logger.error(f"Failed to log alert: {e}")
                     
                     # Draw bounding box
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
