@@ -233,12 +233,14 @@ class InteriorWatchService:
                             self.video_writer.release()
                             self.video_writer = None
                             self.recording_active = False
+                            self.recording_frame_count = 0  # Reset frame counter
                             logger.info(f"Recording stopped: {self.current_recording_path}")
                             logger.info("Evidence saved successfully")
                     else:
                         # Continue recording until minimum duration is met
                         frames_remaining = MIN_RECORDING_FRAMES - self.recording_frame_count
-                        logger.info(f"Minimum recording duration not met. Need {frames_remaining} more frames before stopping.")
+                        seconds_remaining = frames_remaining / 30.0
+                        logger.info(f"Minimum recording duration not met. Need {frames_remaining} more frames (~{seconds_remaining:.1f} seconds) before stopping.")
                     
                     logger.info("Alarm silenced by user")
             
@@ -343,8 +345,12 @@ class InteriorWatchService:
             
             # Dump pre-event buffer frames to capture "Pre-Theft" footage
             logger.info(f"Dumping {len(self.video_buffer)} pre-event frames from ring buffer...")
-            for buffered_frame in self.video_buffer:
-                self.video_writer.write(buffered_frame)
+            try:
+                for buffered_frame in self.video_buffer:
+                    self.video_writer.write(buffered_frame)
+            except Exception as e:
+                logger.error(f"Error writing buffered frames: {e}")
+                # Continue anyway - some pre-event footage is better than none
             
             # Clear buffer after dumping to avoid duplicate frames
             self.video_buffer.clear()
