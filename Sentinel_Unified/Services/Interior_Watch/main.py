@@ -239,7 +239,7 @@ class InteriorWatchService:
                     else:
                         # Continue recording until minimum duration is met
                         frames_remaining = MIN_RECORDING_FRAMES - self.recording_frame_count
-                        seconds_remaining = frames_remaining / 30.0
+                        seconds_remaining = frames_remaining / self.fps
                         logger.info(f"Minimum recording duration not met. Need {frames_remaining} more frames (~{seconds_remaining:.1f} seconds) before stopping.")
                     
                     logger.info("Alarm silenced by user")
