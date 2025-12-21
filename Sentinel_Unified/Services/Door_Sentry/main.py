@@ -18,8 +18,9 @@ import cv2
 import json
 import time
 import logging
+import numpy as np
 from datetime import datetime
-from flask import Flask, Response
+from flask import Flask, Response, request, jsonify
 from dotenv import load_dotenv
 import paho.mqtt.client as mqtt
 
@@ -245,6 +246,36 @@ class DoorSentry:
                 logger.warning(f"Failed to publish alert: {result.rc}")
         except Exception as e:
             logger.error(f"Error publishing alert: {e}")
+    
+    def _publish_command(self, target, action):
+        """
+        Publish MQTT command to other services.
+        
+        Args:
+            target (str): Target service ('all', 'door', etc.)
+            action (str): Action to perform ('RELOAD_FACES', etc.)
+        """
+        if not self._is_mqtt_connected():
+            logger.warning("MQTT client not connected, cannot publish command")
+            return
+            
+        try:
+            payload = {
+                "target": target,
+                "action": action,
+                "timestamp": datetime.now().isoformat()
+            }
+            result = self.mqtt_client.publish(
+                "sentinel/commands",
+                json.dumps(payload),
+                qos=1
+            )
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                logger.info(f"Published command: {target} - {action}")
+            else:
+                logger.warning(f"Failed to publish command: {result.rc}")
+        except Exception as e:
+            logger.error(f"Error publishing command: {e}")
     
     def process_frame(self):
         """
@@ -514,6 +545,137 @@ def health():
     }
 
 
+@app.route('/api/faces/register', methods=['POST'])
+def register_face():
+    """
+    Register a new face in the database.
+    
+    Expects:
+        - image: Image file (multipart/form-data)
+        - name: Person's name (form field)
+    
+    Returns:
+        JSON response with status and message
+    """
+    global door_sentry
+    
+    if door_sentry is None:
+        return jsonify({"error": "Door Sentry not initialized"}), 500
+    
+    try:
+        # Validate request
+        if 'image' not in request.files:
+            return jsonify({"error": "No image file provided"}), 400
+        
+        if 'name' not in request.form:
+            return jsonify({"error": "No name provided"}), 400
+        
+        # Get image and name from request
+        image_file = request.files['image']
+        name = request.form['name']
+        
+        # Validate name
+        if not name or not name.strip():
+            return jsonify({"error": "Name cannot be empty"}), 400
+        
+        name = name.strip()
+        
+        # Read image file into numpy array
+        try:
+            nparr = np.frombuffer(image_file.read(), np.uint8)
+            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+            
+            if img is None:
+                return jsonify({"error": "Failed to decode image"}), 400
+        except Exception as e:
+            logger.error(f"Error reading image: {e}")
+            return jsonify({"error": "Invalid image file"}), 400
+        
+        # Register the face
+        success = door_sentry.auth.register_face(name, img)
+        
+        if success:
+            logger.info(f"Face registered successfully for: {name}")
+            
+            # Broadcast RELOAD_FACES command to all services
+            door_sentry._publish_command('all', 'RELOAD_FACES')
+            
+            return jsonify({
+                "status": "success",
+                "message": f"Face registered for {name}"
+            }), 200
+        else:
+            logger.warning(f"Failed to register face for {name}: No face detected")
+            return jsonify({"error": "No face detected in image"}), 400
+            
+    except Exception as e:
+        logger.error(f"Error in register_face endpoint: {e}", exc_info=True)
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+
+@app.route('/api/faces/delete', methods=['DELETE'])
+def delete_face():
+    """
+    Delete a face from the database.
+    
+    Expects:
+        JSON body with {"name": "Person Name"}
+    
+    Returns:
+        JSON response with status and message
+    """
+    global door_sentry
+    
+    if door_sentry is None:
+        return jsonify({"error": "Door Sentry not initialized"}), 500
+    
+    try:
+        # Validate request
+        if not request.is_json:
+            return jsonify({"error": "Request must be JSON"}), 400
+        
+        data = request.get_json()
+        
+        if 'name' not in data:
+            return jsonify({"error": "No name provided"}), 400
+        
+        name = data['name']
+        
+        # Validate name
+        if not name or not name.strip():
+            return jsonify({"error": "Name cannot be empty"}), 400
+        
+        name = name.strip()
+        
+        # Delete from MongoDB
+        collection = door_sentry.auth.mongo.get_collection('authorized_faces')
+        
+        if collection is None:
+            logger.error("Failed to get authorized_faces collection")
+            return jsonify({"error": "Database connection error"}), 500
+        
+        # Delete all documents with the given name
+        result = collection.delete_many({"name": name})
+        
+        if result.deleted_count > 0:
+            logger.info(f"Deleted {result.deleted_count} face(s) for: {name}")
+            
+            # Broadcast RELOAD_FACES command to all services
+            door_sentry._publish_command('all', 'RELOAD_FACES')
+            
+            return jsonify({
+                "status": "success",
+                "message": f"Deleted {result.deleted_count} face(s) for {name}"
+            }), 200
+        else:
+            logger.warning(f"No faces found for: {name}")
+            return jsonify({"error": f"No faces found for {name}"}), 404
+            
+    except Exception as e:
+        logger.error(f"Error in delete_face endpoint: {e}", exc_info=True)
+        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+
+
 def main():
     """Main entry point."""
     global door_sentry
@@ -532,6 +694,8 @@ def main():
         logger.info(f"Starting Flask server on port {port}...")
         logger.info(f"Video feed available at: http://localhost:{port}/video_feed")
         logger.info(f"Health check available at: http://localhost:{port}/health")
+        logger.info(f"Register face API: http://localhost:{port}/api/faces/register (POST)")
+        logger.info(f"Delete face API: http://localhost:{port}/api/faces/delete (DELETE)")
         logger.info("=" * 60)
         
         # Run Flask app
