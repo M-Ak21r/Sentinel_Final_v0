@@ -95,6 +95,16 @@ class DoorSentry:
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.camera.set(cv2.CAP_PROP_FPS, 30)
         
+        # Camera warmup - discard initial frames to prevent freeze
+        # First few frames from camera are often blank/corrupted
+        logger.info("Warming up camera (discarding initial frames)...")
+        warmup_frames = 15
+        for i in range(warmup_frames):
+            ret, _ = self.camera.read()
+            if not ret:
+                logger.warning(f"Camera warmup frame {i+1}/{warmup_frames} failed")
+        logger.info(f"Camera warmup complete ({warmup_frames} frames discarded)")
+        
         logger.info("Camera opened successfully")
         
         # Initialize MQTT client
