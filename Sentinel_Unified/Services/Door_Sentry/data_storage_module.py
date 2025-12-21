@@ -1,6 +1,7 @@
 import os
 import sys
 import json
+import base64
 from datetime import datetime
 import logging
 import cv2
@@ -46,7 +47,48 @@ class DataStorage:
         except Exception as e:
             self.logger.error(f"Error setting up file storage: {e}")
     
-    def log_security_event(self, event_type, person_name=None, confidence=0, location="front_door", info=""):
+    def _get_base64_image(self, file_path):
+        """
+        Convert an image file to Base64 data URI.
+        
+        Prefers thumbnail version (_thumb.jpg) for smaller payload.
+        Falls back to original if thumbnail doesn't exist.
+        
+        Args:
+            file_path: Path to the image file
+            
+        Returns:
+            str: Base64 data URI (data:image/jpeg;base64,...) or None
+        """
+        if not file_path:
+            return None
+        
+        try:
+            # Try thumbnail first (smaller file size)
+            thumb_path = file_path.replace('.jpg', '_thumb.jpg')
+            
+            if os.path.exists(thumb_path):
+                with open(thumb_path, 'rb') as f:
+                    image_data = f.read()
+                    encoded = base64.b64encode(image_data).decode('utf-8')
+                    return f"data:image/jpeg;base64,{encoded}"
+            
+            # Fallback to original image
+            elif os.path.exists(file_path):
+                with open(file_path, 'rb') as f:
+                    image_data = f.read()
+                    encoded = base64.b64encode(image_data).decode('utf-8')
+                    return f"data:image/jpeg;base64,{encoded}"
+            
+            else:
+                self.logger.warning(f"Image file not found: {file_path}")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Error encoding image to Base64: {e}")
+            return None
+    
+    def log_security_event(self, event_type, person_name=None, confidence=0, location="front_door", info="", image_path=None):
         """Log security events to MongoDB"""
         try:
             # Get events collection
@@ -56,6 +98,11 @@ class DataStorage:
                 self.logger.error("Failed to get events collection from MongoDB in log_security_event() (check connection status)")
                 return
             
+            # Generate Base64 snapshot if image path provided
+            snapshot_url = None
+            if image_path:
+                snapshot_url = self._get_base64_image(image_path)
+            
             # Create document matching Web Interface schema
             event_document = {
                 "topic": "security/door/event",
@@ -64,7 +111,7 @@ class DataStorage:
                 "model": "face_auth",
                 "event": event_type,
                 "confidence": confidence,
-                "snapshotUrl": None,
+                "snapshotUrl": snapshot_url,
                 "status": f"Detected {person_name}" if person_name else event_type,
                 "raw": {
                     "person_name": person_name,
@@ -80,7 +127,7 @@ class DataStorage:
         except Exception as e:
             self.logger.error(f"Error logging security event: {e}")
     
-    def log_alert(self, alert_type, severity, description, action_taken=""):
+    def log_alert(self, alert_type, severity, description, action_taken="", image_path=None):
         """Log alerts to MongoDB with level3 (Critical)"""
         try:
             # Get events collection
@@ -90,6 +137,11 @@ class DataStorage:
                 self.logger.error("Failed to get events collection from MongoDB in log_alert() (check connection status)")
                 return
             
+            # Generate Base64 snapshot if image path provided
+            snapshot_url = None
+            if image_path:
+                snapshot_url = self._get_base64_image(image_path)
+            
             # Create document for critical alert
             alert_document = {
                 "topic": "security/door/event",
@@ -98,7 +150,7 @@ class DataStorage:
                 "model": "face_auth",
                 "event": f"ALERT: {alert_type}",
                 "confidence": None,
-                "snapshotUrl": None,
+                "snapshotUrl": snapshot_url,
                 "status": description,
                 "raw": {
                     "alert_type": alert_type,
@@ -139,7 +191,8 @@ class DataStorage:
                 person_name=person_name,
                 confidence=None,  # Not applicable for evidence logging
                 location="front_door",
-                info=f"Saved image: {filename}"
+                info=f"Saved image: {filename}",
+                image_path=filename
             )
             
             return filename

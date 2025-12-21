@@ -358,7 +358,8 @@ class DoorSentry:
                                             alert_type="INTRUDER_DETECTED",
                                             severity="critical",
                                             description=description,
-                                            action_taken="Alert published"
+                                            action_taken="Alert published",
+                                            image_path=evidence_file
                                         )
                                     except Exception as e:
                                         logger.error(f"Failed to log alert: {e}")
