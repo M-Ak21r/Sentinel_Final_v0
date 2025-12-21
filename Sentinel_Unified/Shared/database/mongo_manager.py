@@ -12,6 +12,7 @@ import threading
 from pathlib import Path
 from typing import Optional
 from pymongo import MongoClient
+from pymongo.database import Database
 from pymongo.errors import ConnectionFailure
 from dotenv import load_dotenv
 
@@ -70,7 +71,7 @@ class MongoManager:
         
         # Initialize connection attributes
         self.client: Optional[MongoClient] = None
-        self.db = None
+        self.db: Optional[Database] = None
         
         # Establish initial connection
         self._connect()
@@ -157,15 +158,30 @@ class MongoManager:
     def get_db(self):
         """
         Get the database object.
-        Attempts to reconnect if the client is missing.
+        Attempts to reconnect if the client is missing or connection is stale.
         
         Returns:
             Database object or None if connection failed.
         """
+        # Check if we need to reconnect
+        needs_reconnect = False
+        
         if self.client is None or self.db is None:
+            needs_reconnect = True
             self.logger.warning(
                 "MongoDB client not connected. Attempting to reconnect..."
             )
+        else:
+            # Verify connection is still alive with a ping
+            try:
+                self.client.admin.command('ping')
+            except Exception as e:
+                needs_reconnect = True
+                self.logger.warning(
+                    f"MongoDB connection is stale: {e}. Attempting to reconnect..."
+                )
+        
+        if needs_reconnect:
             self._connect()
         
         return self.db
