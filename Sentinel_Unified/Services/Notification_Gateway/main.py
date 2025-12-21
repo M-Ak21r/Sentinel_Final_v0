@@ -56,9 +56,10 @@ class NotificationGateway:
         # Initialize state
         self.running = False
         
-        # Initialize MQTT client
+        # Initialize MQTT client with unique client_id
         logger.info(f"Setting up MQTT client (broker: {self.mqtt_broker}:{self.mqtt_port})...")
-        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="notification_gateway")
+        client_id = f"notification_gateway_{int(time.time())}"
+        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id=client_id)
         self.mqtt_client.on_connect = self._on_mqtt_connect
         self.mqtt_client.on_message = self._on_mqtt_message
         
