@@ -17,6 +17,7 @@ import cv2
 import json
 import time
 import logging
+import signal
 from datetime import datetime
 from flask import Flask, Response, jsonify, send_from_directory
 from dotenv import load_dotenv
@@ -167,7 +168,27 @@ class InteriorWatchService:
         os.makedirs(self.evidence_dir, exist_ok=True)
         logger.info(f"Evidence directory: {self.evidence_dir}")
         
+        # Register signal handlers for graceful shutdown
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        logger.info("Signal handlers registered for graceful shutdown")
+        
         logger.info("Interior Watch initialized successfully")
+    
+    def _signal_handler(self, signum, frame):
+        """
+        Handle shutdown signals (SIGINT/SIGTERM).
+        
+        When a signal is received, set self.running = False to allow
+        the main loop to exit naturally and execute the cleanup logic.
+        
+        Args:
+            signum: Signal number
+            frame: Current stack frame
+        """
+        signal_name = "SIGINT" if signum == signal.SIGINT else "SIGTERM"
+        logger.info(f"Received {signal_name} - initiating graceful shutdown...")
+        self.running = False
     
     def _on_mqtt_connect(self, client, userdata, flags, rc, properties=None):
         """Callback when MQTT client connects to broker."""
@@ -205,6 +226,7 @@ class InteriorWatchService:
                         self.video_writer = None
                         self.recording_active = False
                         logger.info(f"Recording stopped: {self.current_recording_path}")
+                        logger.info("Evidence saved successfully")
                     
                     logger.info("Alarm silenced by user")
             
@@ -267,6 +289,8 @@ class InteriorWatchService:
         Start recording video evidence.
         
         Creates a new video file with timestamp in the evidence directory.
+        Uses H.264 codec (avc1) for better web playback compatibility, with
+        fallback to mp4v if avc1 is not available.
         """
         if self.video_writer is not None:
             # Already recording
@@ -276,14 +300,28 @@ class InteriorWatchService:
         filename = f"{EVIDENCE_FILENAME_PREFIX}_{timestamp}.mp4"
         self.current_recording_path = os.path.join(self.evidence_dir, filename)
         
-        # Create video writer
-        fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+        # Try H.264 codec first (avc1) as it's more robust for web playback
+        fourcc_avc1 = cv2.VideoWriter_fourcc(*'avc1')
         self.video_writer = cv2.VideoWriter(
             self.current_recording_path,
-            fourcc,
+            fourcc_avc1,
             self.fps,
             (self.frame_width, self.frame_height)
         )
+        
+        # Check if avc1 codec worked
+        if not self.video_writer.isOpened():
+            logger.warning("H.264 codec (avc1) not available, falling back to mp4v")
+            self.video_writer.release()
+            
+            # Fallback to mp4v codec
+            fourcc_mp4v = cv2.VideoWriter_fourcc(*'mp4v')
+            self.video_writer = cv2.VideoWriter(
+                self.current_recording_path,
+                fourcc_mp4v,
+                self.fps,
+                (self.frame_width, self.frame_height)
+            )
         
         if self.video_writer.isOpened():
             self.recording_active = True
@@ -593,7 +631,10 @@ class InteriorWatchService:
         
         if self.video_writer is not None:
             self.video_writer.release()
+            self.video_writer = None
             logger.info("Video writer released")
+            if self.current_recording_path:
+                logger.info("Evidence saved successfully")
         
         if self.camera is not None:
             self.camera.release()
@@ -732,6 +773,7 @@ def main():
     finally:
         if interior_watch is not None:
             interior_watch.cleanup()
+        logger.info("Interior Watch service terminated")
 
 
 if __name__ == "__main__":
