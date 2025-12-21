@@ -18,6 +18,7 @@ import json
 import time
 import logging
 import signal
+from collections import deque
 from datetime import datetime
 from flask import Flask, Response, jsonify, send_from_directory
 from dotenv import load_dotenv
@@ -59,6 +60,7 @@ ALERT_LEVEL_INFO = 3
 
 # Video recording constants
 EVIDENCE_FILENAME_PREFIX = "theft_evidence"
+MIN_RECORDING_FRAMES = 300  # Minimum recording duration: 10 seconds at 30 FPS
 
 # Visualization constants
 FLASH_INTERVAL_FRAMES = 10  # Flash every N frames
@@ -95,11 +97,16 @@ class InteriorWatchService:
         self.alarm_active = False
         self.recording_active = False
         self.asset_states = {}  # {track_id: {'class': int, 'last_seen': int, 'last_pos': (x, y), 'missing_frames': int}}
+        self.thief_track_ids = set()  # Set of person track_ids who have been identified as thieves
         self.frame_count = 0
         self.video_writer = None
         self.current_recording_path = None
         self.running = False
         self.process_every_n_frames = 2  # Process YOLO every 2nd frame for better FPS
+        self.recording_frame_count = 0  # Track frames recorded for minimum duration enforcement
+        
+        # Initialize ring buffer for pre-event recording (stores ~5 seconds at 30 FPS)
+        self.video_buffer = deque(maxlen=150)
         
         # Initialize FaceAuthenticator
         logger.info("Initializing FaceAuthenticator...")
@@ -141,6 +148,15 @@ class InteriorWatchService:
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.camera.set(cv2.CAP_PROP_FPS, 30)
+        
+        # Camera warmup - discard initial frames to prevent freeze
+        logger.info("Warming up camera (discarding initial frames)...")
+        warmup_frames = 15
+        for i in range(warmup_frames):
+            ret, _ = self.camera.read()
+            if not ret:
+                logger.warning(f"Camera warmup frame {i+1}/{warmup_frames} failed")
+        logger.info(f"Camera warmup complete ({warmup_frames} frames discarded)")
         
         logger.info("Camera opened successfully")
         
@@ -220,13 +236,27 @@ class InteriorWatchService:
                     logger.info("Received STOP_ALARM command - silencing alarm")
                     self.alarm_active = False
                     
-                    # Release video writer if recording
-                    if self.video_writer is not None:
-                        self.video_writer.release()
-                        self.video_writer = None
-                        self.recording_active = False
-                        logger.info(f"Recording stopped: {self.current_recording_path}")
-                        logger.info("Evidence saved successfully")
+                    # Clear thief tracking when alarm is manually stopped
+                    # This allows the system to reset for new detections
+                    if self.thief_track_ids:
+                        logger.info(f"Clearing {len(self.thief_track_ids)} tracked thief IDs")
+                        self.thief_track_ids.clear()
+                    
+                    # Enforce minimum recording duration before stopping
+                    if self.recording_frame_count >= MIN_RECORDING_FRAMES:
+                        # Release video writer if recording
+                        if self.video_writer is not None:
+                            self.video_writer.release()
+                            self.video_writer = None
+                            self.recording_active = False
+                            self.recording_frame_count = 0  # Reset frame counter
+                            logger.info(f"Recording stopped: {self.current_recording_path}")
+                            logger.info("Evidence saved successfully")
+                    else:
+                        # Continue recording until minimum duration is met
+                        frames_remaining = MIN_RECORDING_FRAMES - self.recording_frame_count
+                        seconds_remaining = frames_remaining / self.fps
+                        logger.info(f"Minimum recording duration not met. Need {frames_remaining} more frames (~{seconds_remaining:.1f} seconds) before stopping.")
                     
                     logger.info("Alarm silenced by user")
             
@@ -289,45 +319,66 @@ class InteriorWatchService:
         Start recording video evidence.
         
         Creates a new video file with timestamp in the evidence directory.
-        Uses H.264 codec (avc1) for better web playback compatibility, with
-        fallback to mp4v if avc1 is not available.
+        Uses MJPG codec with AVI container for maximum compatibility across
+        all media players (Windows Media Player, VLC, etc.).
+        
+        Dumps pre-event buffer frames to capture footage before the theft trigger.
         """
         if self.video_writer is not None:
             # Already recording
             return
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{EVIDENCE_FILENAME_PREFIX}_{timestamp}.mp4"
+        # Use .avi extension with MJPG codec for universal compatibility
+        filename = f"{EVIDENCE_FILENAME_PREFIX}_{timestamp}.avi"
         self.current_recording_path = os.path.join(self.evidence_dir, filename)
         
-        # Try H.264 codec first (avc1) as it's more robust for web playback
-        fourcc_avc1 = cv2.VideoWriter_fourcc(*'avc1')
+        # Use MJPG codec - universally compatible with all media players
+        # Note: Files are larger than H.264 but guaranteed to play everywhere
+        fourcc = cv2.VideoWriter_fourcc(*'MJPG')
         self.video_writer = cv2.VideoWriter(
             self.current_recording_path,
-            fourcc_avc1,
+            fourcc,
             self.fps,
             (self.frame_width, self.frame_height)
         )
         
-        # Check if avc1 codec worked
+        # Verify VideoWriter opened successfully
         if not self.video_writer.isOpened():
-            logger.warning("H.264 codec (avc1) not available, falling back to mp4v")
+            logger.error("MJPG codec failed, trying XVID as fallback")
             self.video_writer.release()
             
-            # Fallback to mp4v codec
-            fourcc_mp4v = cv2.VideoWriter_fourcc(*'mp4v')
+            # Fallback to XVID codec (also widely compatible)
+            fourcc_xvid = cv2.VideoWriter_fourcc(*'XVID')
             self.video_writer = cv2.VideoWriter(
                 self.current_recording_path,
-                fourcc_mp4v,
+                fourcc_xvid,
                 self.fps,
                 (self.frame_width, self.frame_height)
             )
         
         if self.video_writer.isOpened():
             self.recording_active = True
+            self.recording_frame_count = 0  # Reset frame counter
+            
+            # Dump pre-event buffer frames to capture "Pre-Theft" footage
+            logger.info(f"Dumping {len(self.video_buffer)} pre-event frames from ring buffer...")
+            try:
+                for buffered_frame in self.video_buffer:
+                    self.video_writer.write(buffered_frame)
+            except Exception as e:
+                logger.error(f"Error writing buffered frames: {e}")
+                # Continue anyway - some pre-event footage is better than none
+            
+            # Clear buffer after dumping to avoid duplicate frames
+            self.video_buffer.clear()
+            
+            # Debug logging to help diagnose file creation issues
             logger.info(f"Started recording: {self.current_recording_path}")
+            logger.info(f"Video writer opened: {self.video_writer.isOpened()}")
         else:
             logger.error(f"Failed to start recording: {self.current_recording_path}")
+            logger.error(f"Video writer opened: {self.video_writer.isOpened()}")
             self.video_writer = None
     
     def _calculate_distance(self, pos1, pos2):
@@ -450,11 +501,65 @@ class InteriorWatchService:
                             
                             # Track persons
                             elif cls == CLASS_PERSON:
+                                # Get person track ID for persistent thief tracking
+                                person_track_id = track_id  # May be None if tracking fails
+                                
+                                # Check if this person is already marked as a thief
+                                is_known_thief = person_track_id is not None and person_track_id in self.thief_track_ids
+                                
+                                # Perform face recognition to determine authorization status
+                                person_crop = frame[y1:y2, x1:x2]
+                                person_name = "Unknown"
+                                is_authorized = False
+                                
+                                if person_crop.size > 0 and not is_known_thief:
+                                    # Skip face recognition for known thieves (they stay red)
+                                    try:
+                                        faces = self.auth.identify_face(person_crop)
+                                        if faces and len(faces) > 0:
+                                            face = faces[0]
+                                            is_authorized = face['is_authorized']
+                                            person_name = face['name'] if is_authorized else "Unknown"
+                                    except Exception as e:
+                                        logger.debug(f"Face recognition failed for person: {e}")
+                                
+                                # Store person info with authorization status and track_id
                                 detected_persons.append({
                                     'bbox': [x1, y1, x2, y2],
                                     'center': self._get_center([x1, y1, x2, y2]),
-                                    'conf': conf
+                                    'conf': conf,
+                                    'is_authorized': is_authorized,
+                                    'name': person_name,
+                                    'track_id': person_track_id,
+                                    'is_thief': is_known_thief
                                 })
+                                
+                                # Draw bounding box with color based on status:
+                                # Green = Authorized personnel (all actions ignored)
+                                # Orange = Unknown person (not yet identified as threat)
+                                # Red = THIEF (persists once identified)
+                                if is_authorized:
+                                    color = (0, 255, 0)  # Green for authorized
+                                    label = f"{person_name} (Staff)"
+                                    thickness = 2
+                                elif is_known_thief:
+                                    color = (0, 0, 255)  # Red for THIEF
+                                    label = "!! THIEF !!"
+                                    thickness = 4
+                                else:
+                                    color = (255, 165, 0)  # Orange for unknown (BGR)
+                                    label = "Unknown Person"
+                                    thickness = 2
+                                
+                                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, thickness)
+                                # Draw label background for better visibility
+                                label_size = cv2.getTextSize(label, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)[0]
+                                cv2.rectangle(annotated_frame, (x1, y1 - label_size[1] - 10), 
+                                            (x1 + label_size[0] + 5, y1), color, -1)
+                                # White text for thief (better contrast on red), black for others
+                                text_color = (255, 255, 255) if is_known_thief else (0, 0, 0)
+                                cv2.putText(annotated_frame, label, (x1 + 2, y1 - 5),
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.6, text_color, 2)
                         
                         # Step 2: "Ghost Protocol" - Detect missing assets
                         for asset_id, asset_info in list(self.asset_states.items()):
@@ -490,49 +595,45 @@ class InteriorWatchService:
                                                     closest_person = person
                                     
                                     if closest_person:
-                                        # We have a suspect - verify identity
+                                        # We have a suspect - use cached authorization info from person detection
                                         x1, y1, x2, y2 = closest_person['bbox']
-                                        suspect_crop = frame[y1:y2, x1:x2]
                                         
-                                        if suspect_crop.size > 0:
-                                            # Run face authentication
-                                            faces = self.auth.identify_face(suspect_crop)
+                                        # Use the authorization info we already computed during person detection
+                                        is_authorized = closest_person.get('is_authorized', False)
+                                        suspect_name = closest_person.get('name', 'Unknown')
+                                        suspect_track_id = closest_person.get('track_id')
+                                        
+                                        if is_authorized:
+                                            # Authorized person - log and ignore
+                                            logger.info(f"Authorized movement by {suspect_name}")
+                                            # Reset asset state since it's authorized
+                                            del self.asset_states[asset_id]
+                                        else:
+                                            # UNAUTHORIZED THEFT DETECTED!
+                                            logger.error(f"THEFT DETECTED! Unauthorized person near asset {asset_id}")
                                             
-                                            is_authorized = False
-                                            suspect_name = "Unknown"
+                                            # Mark this person as a THIEF permanently (until they leave the frame)
+                                            if suspect_track_id is not None:
+                                                self.thief_track_ids.add(suspect_track_id)
+                                                logger.warning(f"Person track_id {suspect_track_id} marked as THIEF")
                                             
-                                            if faces and len(faces) > 0:
-                                                face = faces[0]
-                                                is_authorized = face['is_authorized']
-                                                suspect_name = face['name']
+                                            # Activate alarm
+                                            self.alarm_active = True
                                             
-                                            if is_authorized:
-                                                # Authorized person - log and ignore
-                                                logger.info(f"Authorized movement by {suspect_name}")
-                                                # Reset asset state since it's authorized
-                                                del self.asset_states[asset_id]
-                                            else:
-                                                # UNAUTHORIZED THEFT DETECTED!
-                                                logger.error(f"THEFT DETECTED! Unauthorized person near asset {asset_id}")
-                                                
-                                                # Activate alarm
-                                                self.alarm_active = True
-                                                
-                                                # Start recording if not already
-                                                if not self.recording_active:
-                                                    self.start_recording()
-                                                
-                                                # Publish MQTT alert
-                                                self._publish_alert(
-                                                    level=ALERT_LEVEL_WARNING,
-                                                    alert_type="THEFT",
-                                                    message=f"Theft detected! Asset {asset_id} taken by unauthorized person"
-                                                )
-                                                
-                                                # Draw red box around suspect
-                                                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                                                cv2.putText(annotated_frame, "SUSPECT!", (x1, y1 - 10),
-                                                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                                            # Start recording if not already
+                                            if not self.recording_active:
+                                                self.start_recording()
+                                            
+                                            # Publish MQTT alert with stolen item info
+                                            stolen_item = "Laptop" if self.asset_states[asset_id]['class'] == CLASS_LAPTOP else "Phone"
+                                            self._publish_alert(
+                                                level=ALERT_LEVEL_WARNING,
+                                                alert_type="THEFT",
+                                                message=f"THEFT ALERT: {stolen_item} (ID:{asset_id}) stolen by unauthorized person!"
+                                            )
+                                            
+                                            # Note: Red THIEF box is now drawn automatically during person detection
+                                            # because suspect_track_id is in self.thief_track_ids
                                     else:
                                         # No person nearby - might be a false positive
                                         logger.debug(f"Closest person was {closest_distance:.1f}px away (Threshold: {PROXIMITY_THRESHOLD}px)")
@@ -550,8 +651,23 @@ class InteriorWatchService:
             pass
         
         # Step 4: Recording
-        if self.alarm_active and self.recording_active and self.video_writer is not None:
+        # Always buffer frames for pre-event recording
+        self.video_buffer.append(annotated_frame.copy())
+        
+        # Write to video file if recording is active
+        if self.recording_active and self.video_writer is not None:
             self.video_writer.write(annotated_frame)
+            self.recording_frame_count += 1
+            
+            # Check if minimum recording duration is met and alarm is not active
+            if not self.alarm_active and self.recording_frame_count >= MIN_RECORDING_FRAMES:
+                # Stop recording since minimum duration is met and alarm is cleared
+                self.video_writer.release()
+                self.video_writer = None
+                self.recording_active = False
+                logger.info(f"Recording stopped after {self.recording_frame_count} frames (minimum duration met): {self.current_recording_path}")
+                logger.info("Evidence saved successfully")
+                self.recording_frame_count = 0
         
         # Add timestamp
         timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -620,7 +736,8 @@ class InteriorWatchService:
                 return recordings
             
             for filename in os.listdir(self.evidence_dir):
-                if filename.endswith('.mp4'):
+                # Support both .avi (new format) and .mp4 (legacy) files
+                if filename.endswith('.avi') or filename.endswith('.mp4'):
                     filepath = os.path.join(self.evidence_dir, filename)
                     
                     # Get file stats
@@ -653,25 +770,41 @@ class InteriorWatchService:
         return recordings
     
     def cleanup(self):
-        """Clean up resources."""
+        """Clean up resources with guaranteed VideoWriter release."""
         logger.info("Cleaning up Interior Watch...")
         self.running = False
         
-        if self.video_writer is not None:
-            self.video_writer.release()
-            self.video_writer = None
-            logger.info("Video writer released")
-            if self.current_recording_path:
-                logger.info("Evidence saved successfully")
+        # VideoWriter cleanup with try/finally to prevent corruption
+        try:
+            if self.video_writer is not None:
+                try:
+                    self.video_writer.release()
+                    logger.info("Video writer released")
+                    if self.current_recording_path:
+                        logger.info(f"Evidence saved: {self.current_recording_path}")
+                except Exception as e:
+                    logger.error(f"Error releasing video writer: {e}")
+                finally:
+                    self.video_writer = None
+        except Exception as e:
+            logger.error(f"Error during video writer cleanup: {e}")
         
-        if self.camera is not None:
-            self.camera.release()
-            logger.info("Camera released")
+        # Camera cleanup
+        try:
+            if self.camera is not None:
+                self.camera.release()
+                logger.info("Camera released")
+        except Exception as e:
+            logger.error(f"Error releasing camera: {e}")
         
-        if self.mqtt_client is not None:
-            self.mqtt_client.loop_stop()
-            self.mqtt_client.disconnect()
-            logger.info("MQTT client disconnected")
+        # MQTT cleanup
+        try:
+            if self.mqtt_client is not None:
+                self.mqtt_client.loop_stop()
+                self.mqtt_client.disconnect()
+                logger.info("MQTT client disconnected")
+        except Exception as e:
+            logger.error(f"Error disconnecting MQTT: {e}")
         
         logger.info("Interior Watch cleanup complete")
 

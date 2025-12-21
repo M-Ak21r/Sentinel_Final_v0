@@ -66,6 +66,7 @@ class DoorSentry:
         # Initialize state variables
         self.last_unlock_time = 0
         self.unknown_face_start_time = None
+        self.intruder_alert_sent = False  # Track if alert was already sent for current intruder
         self.running = False
         self.frame_count = 0
         self.process_every_n_frames = 3  # Process detection every 3rd frame for better FPS
@@ -94,6 +95,16 @@ class DoorSentry:
         self.camera.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
         self.camera.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
         self.camera.set(cv2.CAP_PROP_FPS, 30)
+        
+        # Camera warmup - discard initial frames to prevent freeze
+        # First few frames from camera are often blank/corrupted
+        logger.info("Warming up camera (discarding initial frames)...")
+        warmup_frames = 15
+        for i in range(warmup_frames):
+            ret, _ = self.camera.read()
+            if not ret:
+                logger.warning(f"Camera warmup frame {i+1}/{warmup_frames} failed")
+        logger.info(f"Camera warmup complete ({warmup_frames} frames discarded)")
         
         logger.info("Camera opened successfully")
         
@@ -279,8 +290,9 @@ class DoorSentry:
                             self._publish_unlock(user=name)
                             self.last_unlock_time = current_time
                         
-                        # Reset unknown face timer
+                        # Reset unknown face timer and alert flag
                         self.unknown_face_start_time = None
+                        self.intruder_alert_sent = False
                         
                     else:
                         # Draw RED box for unknown face
@@ -291,15 +303,16 @@ class DoorSentry:
                         # Track unknown face duration
                         if self.unknown_face_start_time is None:
                             self.unknown_face_start_time = current_time
+                            self.intruder_alert_sent = False  # Reset flag for new intruder
                         else:
                             duration = current_time - self.unknown_face_start_time
-                            if duration > self.INTRUDER_ALERT_THRESHOLD_SECONDS:
+                            # Only publish alert once per intruder detection
+                            if duration > self.INTRUDER_ALERT_THRESHOLD_SECONDS and not self.intruder_alert_sent:
                                 self._publish_alert(
                                     level="critical",
                                     message="Intruder at door"
                                 )
-                                # Reset timer to avoid spam (re-alert every 5 seconds)
-                                self.unknown_face_start_time = current_time
+                                self.intruder_alert_sent = True  # Mark alert as sent
                     
                     # Draw bounding box
                     cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), color, 2)
@@ -328,9 +341,11 @@ class DoorSentry:
                 # Reset unknown timer if no unknown faces detected
                 if not has_unknown:
                     self.unknown_face_start_time = None
+                    self.intruder_alert_sent = False
             else:
                 # No faces detected, reset unknown timer
                 self.unknown_face_start_time = None
+                self.intruder_alert_sent = False
                 
         except Exception as e:
             logger.error(f"Error during face identification: {e}")
