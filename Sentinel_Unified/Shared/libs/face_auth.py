@@ -220,6 +220,15 @@ class FaceAuthenticator:
                         self.logger.warning(f"Skipping document with missing name or embedding: {doc.get('_id')}")
                         continue
                     
+                    # Validate embedding structure (should be 512D list from InsightFace)
+                    if not isinstance(embedding_list, list) or len(embedding_list) != 512:
+                        self.logger.warning(
+                            f"Skipping document {doc.get('_id')}: Invalid embedding "
+                            f"(expected list of 512 floats, got {type(embedding_list)} "
+                            f"with length {len(embedding_list) if isinstance(embedding_list, list) else 'N/A'})"
+                        )
+                        continue
+                    
                     # Convert embedding from list to numpy array
                     embedding = np.array(embedding_list, dtype=np.float32)
                     
@@ -260,6 +269,7 @@ class FaceAuthenticator:
                 return False
             
             # Create document for MongoDB
+            # Note: InsightFace ArcFace produces 512-dimensional float32 embeddings
             doc = {
                 "name": name,
                 "embedding": embedding.tolist(),  # Convert numpy to list for MongoDB
@@ -276,12 +286,17 @@ class FaceAuthenticator:
             
             result = collection.insert_one(doc)
             
-            # Update local cache
-            self.known_face_encodings.append(embedding)
-            self.known_face_names.append(name)
-            
-            self.logger.info(f"Successfully registered face for {name} with ID: {result.inserted_id}")
-            return True
+            # Verify insert succeeded before updating local cache
+            if result and result.inserted_id:
+                # Update local cache
+                self.known_face_encodings.append(embedding)
+                self.known_face_names.append(name)
+                
+                self.logger.info(f"Successfully registered face for {name} with ID: {result.inserted_id}")
+                return True
+            else:
+                self.logger.error(f"Failed to insert document for {name}: No inserted_id returned")
+                return False
             
         except Exception as e:
             self.logger.error(f"Error registering face for {name}: {e}")
