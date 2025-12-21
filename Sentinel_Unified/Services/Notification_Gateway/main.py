@@ -46,11 +46,12 @@ class NotificationGateway:
         # Load configuration from environment
         self.mqtt_broker = os.getenv('MQTT_BROKER', 'localhost')
         self.mqtt_port = int(os.getenv('MQTT_PORT', 1883))
+        
+        # TODO: Phase 2 - SMS configuration for Twilio integration
         self.sms_provider_sid = os.getenv('SMS_PROVIDER_SID', '')
         self.sms_provider_token = os.getenv('SMS_PROVIDER_TOKEN', '')
         self.sms_from_number = os.getenv('SMS_FROM_NUMBER', '')
         self.alert_target_phone = os.getenv('ALERT_TARGET_PHONE', '')
-        self.port = int(os.getenv('NOTIFICATION_GATEWAY_PORT', 5005))
         
         # Initialize state
         self.running = False
@@ -142,7 +143,7 @@ class NotificationGateway:
             # Process based on priority
             if is_high_priority:
                 logger.info(f"[ALERT TRIGGERED] {alert_type}: {message}")
-                # TODO: Phase 2 - Send SMS via Twilio API
+                # TODO: Phase 2 - Send SMS via Twilio API using self.sms_* configurations
                 # For now, just log the high-priority alert
             else:
                 logger.debug(f"Low priority alert: {alert_type} - {message}")
