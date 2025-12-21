@@ -53,7 +53,7 @@ class DataStorage:
             events_collection = self.mongo.get_collection('events')
             
             if events_collection is None:
-                self.logger.error("Failed to get events collection from MongoDB")
+                self.logger.error("Failed to get events collection from MongoDB in log_security_event() (check connection status)")
                 return
             
             # Create document matching Web Interface schema
@@ -87,7 +87,7 @@ class DataStorage:
             events_collection = self.mongo.get_collection('events')
             
             if events_collection is None:
-                self.logger.error("Failed to get events collection from MongoDB")
+                self.logger.error("Failed to get events collection from MongoDB in log_alert() (check connection status)")
                 return
             
             # Create document for critical alert
@@ -137,7 +137,7 @@ class DataStorage:
             self.log_security_event(
                 event_type=f"EVIDENCE_SAVED_{event_type}",
                 person_name=person_name,
-                confidence=0,
+                confidence=None,  # Not applicable for evidence logging
                 location="front_door",
                 info=f"Saved image: {filename}"
             )
@@ -188,7 +188,7 @@ class DataStorage:
             self.log_security_event(
                 event_type=f"VIDEO_{event_type}",
                 person_name=person_name,
-                confidence=0,
+                confidence=None,  # Not applicable for evidence logging
                 location="front_door",
                 info=f"Saved clip: {filename}"
             )
