@@ -3,9 +3,14 @@
 # Core Vision & AI
 ultralytics>=8.0.0
 insightface>=0.7.3
-onnxruntime-gpu>=1.16.0
+# CUDA 12.x compatible versions
+onnxruntime-gpu==1.19.2
 opencv-python>=4.8.0
 numpy>=1.24.0
+
+# PyTorch with CUDA support (install separately with: pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121)
+# torch (CUDA 12.1 compatible)
+# torchvision (CUDA 12.1 compatible)
 
 # Web Framework
 flask>=2.3.0

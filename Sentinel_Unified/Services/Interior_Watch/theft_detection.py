@@ -16,6 +16,7 @@ import time
 import logging
 import pickle
 import os
+import sys
 import threading
 import queue
 import json
@@ -30,6 +31,10 @@ from insightface.app import FaceAnalysis
 from ultralytics import YOLO
 from flask import Flask, Response
 import paho.mqtt.client as mqtt
+
+# Add parent directory to path for shared modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'Shared'))
+from libs.file_utils import safe_image_write, safe_video_writer, ensure_directory
 
 try:
     import serial
@@ -81,7 +86,7 @@ class EvidenceWriter(threading.Thread):
     def __init__(self):
         """Initialize the evidence writer thread."""
         super().__init__(daemon=True)
-        self.queue = queue.Queue()
+        self.queue = queue.Queue(maxsize=100)  # Bounded queue to prevent memory exhaustion
         self._stop_event = threading.Event()
         
     def run(self):
@@ -101,18 +106,14 @@ class EvidenceWriter(threading.Thread):
                     # Task format: ('image', path, frame)
                     _, path, frame = task
                     try:
-                        cv2.imwrite(str(path), frame)
-                        logger.debug(f"Wrote image to {path}")
+                        if not safe_image_write(str(path), frame, cv2):
+                            logger.error(f"Failed to write image to {path}")
+                        else:
+                            logger.debug(f"Wrote image to {path}")
                     except Exception as e:
-                        logger.error(f"Failed to write image to {path}: {e}")
+                        logger.error(f"Error writing image to {path}: {e}")
                 
-                elif task_type == 'video_frame':
-                    # Task format: ('video_frame', writer, frame)
-                    _, writer, frame = task
-                    try:
-                        writer.write(frame)
-                    except Exception as e:
-                        logger.error(f"Failed to write video frame: {e}")
+                # Note: video_frame tasks removed - VideoWriter now used synchronously with lock
                 
                 self.queue.task_done()
                 
@@ -121,6 +122,13 @@ class EvidenceWriter(threading.Thread):
                 continue
             except Exception as e:
                 logger.error(f"Error in EvidenceWriter thread: {e}")
+    
+    def queue_task(self, task):
+        """Queue a task with overflow handling."""
+        try:
+            self.queue.put(task, block=False)
+        except queue.Full:
+            logger.warning(f"Evidence writer queue full, dropping task: {task[0]}")
     
     def stop(self):
         """Signal the thread to stop and wait for it to finish."""
@@ -249,9 +257,10 @@ class TheftDetectionSystem:
         self.frame_buffer: list[np.ndarray] = []
         self.buffer_max_frames = 0  # Will be set based on FPS
         
-        # Video recording state
+        # Video recording state (thread-safe)
         self.is_recording_theft = False
         self.video_writer: Optional[cv2.VideoWriter] = None
+        self.video_writer_lock = threading.Lock()  # Protect VideoWriter from concurrent access
         self.recording_frames_remaining = 0
         self.current_theft_timestamp = None
         
@@ -689,12 +698,12 @@ class TheftDetectionSystem:
             theft_timestamp: Timestamp identifier for this theft event
         """
         try:
-            # Save full frame (async)
+            # Save full frame (async with overflow handling)
             full_frame_path = self.evidence_dir / f"theft_{theft_timestamp}_fullframe.jpg"
-            self.evidence_writer.queue.put(('image', full_frame_path, frame.copy()))
+            self.evidence_writer.queue_task(('image', full_frame_path, frame.copy()))
             logger.info(f"Queued theft evidence: {full_frame_path}")
             
-            # Save cropped suspect image if available (async)
+            # Save cropped suspect image if available (async with overflow handling)
             if suspect_id in self.person_states:
                 suspect = self.person_states[suspect_id]
                 x1, y1, x2, y2 = [int(coord) for coord in suspect.bbox]
@@ -707,7 +716,7 @@ class TheftDetectionSystem:
                 if x2 > x1 and y2 > y1:
                     suspect_crop = frame[y1:y2, x1:x2].copy()
                     crop_path = self.evidence_dir / f"theft_{theft_timestamp}_suspect_{suspect_id}.jpg"
-                    self.evidence_writer.queue.put(('image', crop_path, suspect_crop))
+                    self.evidence_writer.queue_task(('image', crop_path, suspect_crop))
                     logger.info(f"Queued suspect image: {crop_path}")
         
         except Exception as e:
@@ -723,38 +732,66 @@ class TheftDetectionSystem:
             frame_size: (width, height) of the video frames
         """
         try:
-            video_path = self.evidence_dir / f"theft_{theft_timestamp}.mp4"
-            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
-            self.video_writer = cv2.VideoWriter(str(video_path), fourcc, fps, frame_size)
-            
-            if not self.video_writer.isOpened():
-                logger.error("Failed to open video writer")
-                return
-            
-            # Write buffered frames (pre-theft footage) asynchronously
-            for buffered_frame in self.frame_buffer:
-                self.evidence_writer.queue.put(('video_frame', self.video_writer, buffered_frame.copy()))
-            
-            self.is_recording_theft = True
-            self.recording_frames_remaining = int(fps * VIDEO_RECORD_AFTER_SECONDS)
-            self.current_theft_timestamp = theft_timestamp
-            
-            logger.info(f"Started theft video recording: {video_path}")
+            with self.video_writer_lock:
+                # Close any existing writer
+                if self.video_writer:
+                    self.video_writer.release()
+                
+                video_path = self.evidence_dir / f"theft_{theft_timestamp}.mp4"
+                fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+                self.video_writer = cv2.VideoWriter(str(video_path), fourcc, fps, frame_size)
+                
+                if not self.video_writer.isOpened():
+                    logger.error("Failed to open video writer")
+                    self.video_writer = None
+                    return
+                
+                # Write buffered frames (pre-theft footage) synchronously
+                for buffered_frame in self.frame_buffer:
+                    try:
+                        self.video_writer.write(buffered_frame)
+                    except Exception as e:
+                        logger.error(f"Failed to write buffered frame: {e}")
+                
+                self.is_recording_theft = True
+                self.recording_frames_remaining = int(fps * VIDEO_RECORD_AFTER_SECONDS)
+                self.current_theft_timestamp = theft_timestamp
+                
+                logger.info(f"Started theft video recording: {video_path}")
         
         except Exception as e:
             logger.error(f"Failed to start video recording: {e}")
             self.is_recording_theft = False
     
-    def _stop_theft_video_recording(self) -> None:
-        """Stop recording the theft video."""
-        if self.video_writer:
-            self.video_writer.release()
-            self.video_writer = None
-            logger.info(f"Stopped theft video recording: theft_{self.current_theft_timestamp}.mp4")
+    def _write_video_frame(self, frame: np.ndarray) -> None:
+        """
+        Write a frame to the current theft video (thread-safe).
         
-        self.is_recording_theft = False
-        self.recording_frames_remaining = 0
-        self.current_theft_timestamp = None
+        Args:
+            frame: Frame to write
+        """
+        with self.video_writer_lock:
+            if self.video_writer and self.is_recording_theft:
+                try:
+                    self.video_writer.write(frame)
+                except Exception as e:
+                    logger.error(f"Failed to write video frame: {e}")
+    
+    def _stop_theft_video_recording(self) -> None:
+        """Stop recording the theft video (thread-safe)."""
+        with self.video_writer_lock:
+            if self.video_writer:
+                try:
+                    self.video_writer.release()
+                except Exception as e:
+                    logger.error(f"Error releasing video writer: {e}")
+                finally:
+                    self.video_writer = None
+                    logger.info(f"Stopped theft video recording: theft_{self.current_theft_timestamp}.mp4")
+            
+            self.is_recording_theft = False
+            self.recording_frames_remaining = 0
+            self.current_theft_timestamp = None
     
     def _find_closest_person(
         self,
@@ -1113,9 +1150,9 @@ class TheftDetectionSystem:
         if len(self.frame_buffer) > self.buffer_max_frames:
             self.frame_buffer.pop(0)
         
-        # Write frame to theft video if recording (async)
-        if self.is_recording_theft and self.video_writer:
-            self.evidence_writer.queue.put(('video_frame', self.video_writer, frame.copy()))
+        # Write frame to theft video if recording (synchronous with lock)
+        if self.is_recording_theft:
+            self._write_video_frame(frame.copy())
             self.recording_frames_remaining -= 1
             if self.recording_frames_remaining <= 0:
                 self._stop_theft_video_recording()
@@ -1332,11 +1369,23 @@ class TheftDetectionSystem:
         """Clean up resources before shutdown."""
         logger.info("Cleaning up resources...")
         
-        # Stop any ongoing theft recording
+        # Stop any ongoing theft recording (thread-safe)
         if self.is_recording_theft:
+            logger.info("Stopping ongoing theft recording before shutdown...")
             self._stop_theft_video_recording()
         
-        # Stop evidence writer thread
+        # Ensure VideoWriter is released even if recording flag is false
+        with self.video_writer_lock:
+            if self.video_writer:
+                try:
+                    self.video_writer.release()
+                    self.video_writer = None
+                    logger.info("VideoWriter released during cleanup")
+                except Exception as e:
+                    logger.error(f"Error releasing VideoWriter during cleanup: {e}")
+        
+        # Stop evidence writer thread and wait for queue to empty
+        logger.info("Stopping evidence writer thread...")
         self.evidence_writer.stop()
         
         # Disconnect MQTT client

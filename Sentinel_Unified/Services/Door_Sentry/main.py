@@ -99,7 +99,7 @@ class DoorSentry:
         
         # Initialize MQTT client
         logger.info(f"Setting up MQTT client (broker: {self.mqtt_broker}:{self.mqtt_port})...")
-        self.mqtt_client = mqtt.Client(client_id="door_sentry")
+        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="door_sentry")
         self.mqtt_client.on_connect = self._on_mqtt_connect
         self.mqtt_client.on_message = self._on_mqtt_message
         
@@ -113,7 +113,7 @@ class DoorSentry:
         
         logger.info("Door Sentry initialized successfully")
     
-    def _on_mqtt_connect(self, client, userdata, flags, rc):
+    def _on_mqtt_connect(self, client, userdata, flags, rc, properties=None):
         """Callback when MQTT client connects to broker."""
         if rc == 0:
             logger.info("Connected to MQTT broker successfully")
@@ -123,7 +123,7 @@ class DoorSentry:
         else:
             logger.error(f"Failed to connect to MQTT broker with code {rc}")
     
-    def _on_mqtt_message(self, client, userdata, msg):
+    def _on_mqtt_message(self, client, userdata, msg, properties=None):
         """Callback when MQTT message is received."""
         try:
             payload = json.loads(msg.payload.decode('utf-8'))

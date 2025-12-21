@@ -8,11 +8,16 @@ Moves processed clips to: evidence/gesture_queue/processed
 
 import time
 import os
+import sys
 import glob
 import json
 import shutil
 import cv2
 import logging
+
+# Add parent directory to path for shared modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'Shared'))
+from libs.file_utils import atomic_write_json, ensure_directory
 
 from gesture_recognition_module import GestureRecognizer
 
@@ -51,22 +56,29 @@ def process_clip(clip_path, meta_path=None):
             'timestamp': time.time()
         }
 
-        # Write result JSON
+        # Write result JSON atomically
         uid = os.path.splitext(os.path.basename(clip_path))[0]
         out_path = os.path.join(RESULTS, f"{uid}.json")
-        with open(out_path, 'w') as f:
-            json.dump(result, f)
+        if not atomic_write_json(out_path, result):
+            logger.error(f"Failed to write result JSON: {out_path}")
+            return
 
-        # Move clip and meta to processed
+        # Move clip and meta to processed with error handling
+        ensure_directory(PROCESSED)
         try:
-            shutil.move(clip_path, os.path.join(PROCESSED, os.path.basename(clip_path)))
-        except Exception:
-            pass
+            dest_clip = os.path.join(PROCESSED, os.path.basename(clip_path))
+            shutil.move(clip_path, dest_clip)
+            logger.debug(f"Moved clip to {dest_clip}")
+        except Exception as e:
+            logger.error(f"Failed to move clip {clip_path}: {e}")
+        
         if meta_path and os.path.exists(meta_path):
             try:
-                shutil.move(meta_path, os.path.join(PROCESSED, os.path.basename(meta_path)))
-            except Exception:
-                pass
+                dest_meta = os.path.join(PROCESSED, os.path.basename(meta_path))
+                shutil.move(meta_path, dest_meta)
+                logger.debug(f"Moved metadata to {dest_meta}")
+            except Exception as e:
+                logger.error(f"Failed to move metadata {meta_path}: {e}")
 
         logger.info(f"Wrote result: {out_path} -> suspicious={suspicious} label={label} conf={conf:.2f}")
 

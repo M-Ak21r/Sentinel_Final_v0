@@ -150,7 +150,7 @@ class InteriorWatchService:
         
         # Initialize MQTT client
         logger.info(f"Setting up MQTT client (broker: {self.mqtt_broker}:{self.mqtt_port})...")
-        self.mqtt_client = mqtt.Client(client_id="interior_watch")
+        self.mqtt_client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, client_id="interior_watch")
         self.mqtt_client.on_connect = self._on_mqtt_connect
         self.mqtt_client.on_message = self._handle_mqtt_command
         
@@ -169,7 +169,7 @@ class InteriorWatchService:
         
         logger.info("Interior Watch initialized successfully")
     
-    def _on_mqtt_connect(self, client, userdata, flags, rc):
+    def _on_mqtt_connect(self, client, userdata, flags, rc, properties=None):
         """Callback when MQTT client connects to broker."""
         if rc == 0:
             logger.info("Connected to MQTT broker successfully")
@@ -179,7 +179,7 @@ class InteriorWatchService:
         else:
             logger.error(f"Failed to connect to MQTT broker with code {rc}")
     
-    def _handle_mqtt_command(self, client, userdata, msg):
+    def _handle_mqtt_command(self, client, userdata, msg, properties=None):
         """
         Handle incoming MQTT commands.
         
@@ -347,149 +347,145 @@ class InteriorWatchService:
             try:
                 results = self.model.track(frame, persist=True, verbose=False)
             
-            if results and len(results) > 0:
-                result = results[0]
-                
-                # Get detections
-                if result.boxes is not None and len(result.boxes) > 0:
-                    boxes = result.boxes
+                if results and len(results) > 0:
+                    result = results[0]
                     
-                    # Track which assets we've seen this frame
-                    seen_asset_ids = set()
-                    detected_persons = []
-                    
-                    # Process each detection
-                    for i, box in enumerate(boxes):
-                        cls = int(box.cls[0])
-                        conf = float(box.conf[0])
-                        xyxy = box.xyxy[0].cpu().numpy()
-                        x1, y1, x2, y2 = map(int, xyxy)
+                    # Get detections
+                    if result.boxes is not None and len(result.boxes) > 0:
+                        boxes = result.boxes
                         
-                        # Get track ID if available
-                        if box.id is not None:
-                            track_id = int(box.id[0])
-                        else:
-                            track_id = None
+                        # Track which assets we've seen this frame
+                        seen_asset_ids = set()
+                        detected_persons = []
                         
-                        # Track assets (laptops and cell phones)
-                        if cls in ASSET_CLASSES and track_id is not None:
-                            seen_asset_ids.add(track_id)
-                            center = self._get_center([x1, y1, x2, y2])
+                        # Process each detection
+                        for i, box in enumerate(boxes):
+                            cls = int(box.cls[0])
+                            conf = float(box.conf[0])
+                            xyxy = box.xyxy[0].cpu().numpy()
+                            x1, y1, x2, y2 = map(int, xyxy)
                             
-                            # Update asset state
-                            if track_id not in self.asset_states:
-                                self.asset_states[track_id] = {
-                                    'class': cls,
-                                    'last_seen': self.frame_count,
-                                    'last_pos': center,
-                                    'missing_frames': 0
-                                }
+                            # Get track ID if available
+                            if box.id is not None:
+                                track_id = int(box.id[0])
                             else:
-                                self.asset_states[track_id]['last_seen'] = self.frame_count
-                                self.asset_states[track_id]['last_pos'] = center
-                                self.asset_states[track_id]['missing_frames'] = 0
+                                track_id = None
                             
-                            # Draw green box for tracked assets
-                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
-                            label = f"{'Laptop' if cls == CLASS_LAPTOP else 'Phone'} ID:{track_id}"
-                            cv2.putText(annotated_frame, label, (x1, y1 - 10),
-                                      cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
-                        
-                        # Track persons
-                        elif cls == CLASS_PERSON:
-                            detected_persons.append({
-                                'bbox': [x1, y1, x2, y2],
-                                'center': self._get_center([x1, y1, x2, y2]),
-                                'conf': conf
-                            })
-                    
-                    # Step 2: "Ghost Protocol" - Detect missing assets
-                    for asset_id, asset_info in list(self.asset_states.items()):
-                        if asset_id not in seen_asset_ids:
-                            # Asset is missing from this frame
-                            asset_info['missing_frames'] += 1
-                            
-                            # Check if asset has been missing long enough to trigger theft
-                            if asset_info['missing_frames'] == FRAMES_UNTIL_THEFT:
-                                logger.warning(f"POTENTIAL THEFT: Asset {asset_id} missing for {FRAMES_UNTIL_THEFT} frames")
+                            # Track assets (laptops and cell phones)
+                            if cls in ASSET_CLASSES and track_id is not None:
+                                seen_asset_ids.add(track_id)
+                                center = self._get_center([x1, y1, x2, y2])
                                 
-                                # Step 3: Find closest person to the asset's last known position
-                                last_pos = asset_info['last_pos']
-                                closest_person = None
-                                closest_distance = float('inf')
-                                
-                                for person in detected_persons:
-                                    distance = self._calculate_distance(last_pos, person['center'])
-                                    if distance < closest_distance and distance < PROXIMITY_THRESHOLD:
-                                        closest_distance = distance
-                                        closest_person = person
-                                
-                                if closest_person:
-                                    # We have a suspect - verify identity
-                                    x1, y1, x2, y2 = closest_person['bbox']
-                                    suspect_crop = frame[y1:y2, x1:x2]
-                                    
-                                    if suspect_crop.size > 0:
-                                        # Run face authentication
-                                        faces = self.auth.identify_face(suspect_crop)
-                                        
-                                        is_authorized = False
-                                        suspect_name = "Unknown"
-                                        
-                                        if faces and len(faces) > 0:
-                                            face = faces[0]
-                                            is_authorized = face['is_authorized']
-                                            suspect_name = face['name']
-                                        
-                                        if is_authorized:
-                                            # Authorized person - log and ignore
-                                            logger.info(f"Authorized movement by {suspect_name}")
-                                            # Reset asset state since it's authorized
-                                            del self.asset_states[asset_id]
-                                        else:
-                                            # UNAUTHORIZED THEFT DETECTED!
-                                            logger.error(f"THEFT DETECTED! Unauthorized person near asset {asset_id}")
-                                            
-                                            # Activate alarm
-                                            self.alarm_active = True
-                                            
-                                            # Start recording if not already
-                                            if not self.recording_active:
-                                                self.start_recording()
-                                            
-                                            # Publish MQTT alert
-                                            self._publish_alert(
-                                                level=ALERT_LEVEL_WARNING,
-                                                alert_type="THEFT",
-                                                message=f"Theft detected! Asset {asset_id} taken by unauthorized person"
-                                            )
-                                            
-                                            # Draw red box around suspect
-                                            cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
-                                            cv2.putText(annotated_frame, "SUSPECT!", (x1, y1 - 10),
-                                                      cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                                # Update asset state
+                                if track_id not in self.asset_states:
+                                    self.asset_states[track_id] = {
+                                        'class': cls,
+                                        'last_seen': self.frame_count,
+                                        'last_pos': center,
+                                        'missing_frames': 0
+                                    }
                                 else:
-                                    # No person nearby - might be a false positive
-                                    logger.info(f"Asset {asset_id} disappeared but no suspect nearby")
+                                    self.asset_states[track_id]['last_seen'] = self.frame_count
+                                    self.asset_states[track_id]['last_pos'] = center
+                                    self.asset_states[track_id]['missing_frames'] = 0
+                                
+                                # Draw green box for tracked assets
+                                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 255, 0), 2)
+                                label = f"{'Laptop' if cls == CLASS_LAPTOP else 'Phone'} ID:{track_id}"
+                                cv2.putText(annotated_frame, label, (x1, y1 - 10),
+                                          cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 2)
+                            
+                            # Track persons
+                            elif cls == CLASS_PERSON:
+                                detected_persons.append({
+                                    'bbox': [x1, y1, x2, y2],
+                                    'center': self._get_center([x1, y1, x2, y2]),
+                                    'conf': conf
+                                })
                         
-                        # Clean up old asset states (missing for too long)
-                        if asset_info['missing_frames'] > FRAMES_UNTIL_THEFT * STALE_ASSET_MULTIPLIER:
-                            logger.info(f"Removing stale asset {asset_id} from tracking")
-                            del self.asset_states[asset_id]
+                        # Step 2: "Ghost Protocol" - Detect missing assets
+                        for asset_id, asset_info in list(self.asset_states.items()):
+                            if asset_id not in seen_asset_ids:
+                                # Asset is missing from this frame
+                                asset_info['missing_frames'] += 1
+                                
+                                # Check if asset has been missing long enough to trigger theft
+                                if asset_info['missing_frames'] == FRAMES_UNTIL_THEFT:
+                                    logger.warning(f"POTENTIAL THEFT: Asset {asset_id} missing for {FRAMES_UNTIL_THEFT} frames")
+                                    
+                                    # Step 3: Find closest person to the asset's last known position
+                                    last_pos = asset_info['last_pos']
+                                    closest_person = None
+                                    closest_distance = float('inf')
+                                    
+                                    for person in detected_persons:
+                                        distance = self._calculate_distance(last_pos, person['center'])
+                                        if distance < closest_distance and distance < PROXIMITY_THRESHOLD:
+                                            closest_distance = distance
+                                            closest_person = person
+                                    
+                                    if closest_person:
+                                        # We have a suspect - verify identity
+                                        x1, y1, x2, y2 = closest_person['bbox']
+                                        suspect_crop = frame[y1:y2, x1:x2]
+                                        
+                                        if suspect_crop.size > 0:
+                                            # Run face authentication
+                                            faces = self.auth.identify_face(suspect_crop)
+                                            
+                                            is_authorized = False
+                                            suspect_name = "Unknown"
+                                            
+                                            if faces and len(faces) > 0:
+                                                face = faces[0]
+                                                is_authorized = face['is_authorized']
+                                                suspect_name = face['name']
+                                            
+                                            if is_authorized:
+                                                # Authorized person - log and ignore
+                                                logger.info(f"Authorized movement by {suspect_name}")
+                                                # Reset asset state since it's authorized
+                                                del self.asset_states[asset_id]
+                                            else:
+                                                # UNAUTHORIZED THEFT DETECTED!
+                                                logger.error(f"THEFT DETECTED! Unauthorized person near asset {asset_id}")
+                                                
+                                                # Activate alarm
+                                                self.alarm_active = True
+                                                
+                                                # Start recording if not already
+                                                if not self.recording_active:
+                                                    self.start_recording()
+                                                
+                                                # Publish MQTT alert
+                                                self._publish_alert(
+                                                    level=ALERT_LEVEL_WARNING,
+                                                    alert_type="THEFT",
+                                                    message=f"Theft detected! Asset {asset_id} taken by unauthorized person"
+                                                )
+                                                
+                                                # Draw red box around suspect
+                                                cv2.rectangle(annotated_frame, (x1, y1), (x2, y2), (0, 0, 255), 3)
+                                                cv2.putText(annotated_frame, "SUSPECT!", (x1, y1 - 10),
+                                                          cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                                    else:
+                                        # No person nearby - might be a false positive
+                                        logger.info(f"Asset {asset_id} disappeared but no suspect nearby")
+                            
+                            # Clean up old asset states (missing for too long)
+                            if asset_info['missing_frames'] > FRAMES_UNTIL_THEFT * STALE_ASSET_MULTIPLIER:
+                                logger.info(f"Removing stale asset {asset_id} from tracking")
+                                del self.asset_states[asset_id]
             
-        except Exception as e:
-            logger.error(f"Error during YOLO tracking: {e}")
-        
-        # Step 4: Recording
-        if self.alarm_active and self.recording_active and self.video_writer is not None:
-            self.video_writer.write(annotated_frame)
-        
-        # Step 5: Visualization
             except Exception as e:
                 logger.error(f"Error during YOLO tracking: {e}")
         else:
             # Frame skipped - just stream without detection
             pass
+        
+        # Step 4: Recording
+        if self.alarm_active and self.recording_active and self.video_writer is not None:
+            self.video_writer.write(annotated_frame)
         
         # Add timestamp
         timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")

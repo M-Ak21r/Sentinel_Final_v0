@@ -1,11 +1,19 @@
 import json
 import csv
 import os
+import sys
 import sqlite3
 from datetime import datetime
 import logging
 import pickle
 import cv2
+
+# Add parent directory to path for shared modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'Shared'))
+from libs.file_utils import (
+    FileLock, atomic_write_json, atomic_append_csv, safe_read_json,
+    safe_image_write, safe_video_writer, ensure_directory
+)
 
 class DataStorage:
     def __init__(self):
@@ -86,8 +94,7 @@ class DataStorage:
             # Create directories for storing evidence
             directories = ['evidence/images', 'evidence/videos', 'evidence/gesture_queue/incoming', 'evidence/gesture_queue/processed', 'evidence/gesture_queue/results', 'logs']
             for directory in directories:
-                if not os.path.exists(directory):
-                    os.makedirs(directory)
+                ensure_directory(directory)
             
             # Initialize CSV file with headers if it doesn't exist
             if not os.path.exists(self.alerts_file):
@@ -117,7 +124,7 @@ class DataStorage:
             conn.commit()
             conn.close()
             
-            # JSON logging
+            # JSON logging with atomic write and file locking
             event_data = {
                 'timestamp': timestamp,
                 'event_type': event_type,
@@ -127,19 +134,10 @@ class DataStorage:
                 'additional_info': info
             }
             
-            # Append to JSON file
-            events = []
-            if os.path.exists(self.events_file):
-                with open(self.events_file, 'r') as f:
-                    try:
-                        events = json.load(f)
-                    except json.JSONDecodeError:
-                        events = []
-            
+            # Append to JSON file atomically
+            events = safe_read_json(self.events_file, default=[])
             events.append(event_data)
-            
-            with open(self.events_file, 'w') as f:
-                json.dump(events, f, indent=2)
+            atomic_write_json(self.events_file, events)
             
             self.logger.info(f"Security event logged: {event_type} - {person_name}")
             
@@ -163,10 +161,11 @@ class DataStorage:
             conn.commit()
             conn.close()
             
-            # CSV logging
-            with open(self.alerts_file, 'a', newline='') as file:
-                writer = csv.writer(file)
-                writer.writerow([timestamp, alert_type, severity, description, "front_door", action_taken])
+            # CSV logging with atomic append and file locking
+            atomic_append_csv(
+                self.alerts_file,
+                [timestamp, alert_type, severity, description, "front_door", action_taken]
+            )
             
             self.logger.warning(f"Alert logged: {alert_type} - {severity} - {description}")
             
@@ -182,8 +181,13 @@ class DataStorage:
             # Create thumbnail
             thumbnail = cv2.resize(frame, (320, 240))
             
-            cv2.imwrite(filename, frame)
-            cv2.imwrite(filename.replace(".jpg", "_thumb.jpg"), thumbnail)
+            # Use safe image write with verification
+            if not safe_image_write(filename, frame, cv2):
+                self.logger.error(f"Failed to save main evidence image: {filename}")
+                return None
+            
+            if not safe_image_write(filename.replace(".jpg", "_thumb.jpg"), thumbnail, cv2):
+                self.logger.warning(f"Failed to save thumbnail for: {filename}")
             
             # Log in database
             conn = sqlite3.connect(self.db_file)
@@ -225,20 +229,19 @@ class DataStorage:
             h, w = frames[0].shape[:2]
             # Use MJPG codec for wide compatibility
             fourcc = cv2.VideoWriter_fourcc(*'XVID')
-            out = cv2.VideoWriter(filename, fourcc, fps, (w, h))
-
-            for f in frames:
-                # Ensure frame has same size
-                if f.shape[0] != h or f.shape[1] != w:
-                    f = cv2.resize(f, (w, h))
-                out.write(f)
-
-            out.release()
+            
+            # Use context manager to ensure VideoWriter is always released
+            with safe_video_writer(filename, fourcc, fps, (w, h), cv2) as out:
+                for f in frames:
+                    # Ensure frame has same size
+                    if f.shape[0] != h or f.shape[1] != w:
+                        f = cv2.resize(f, (w, h))
+                    out.write(f)
 
             # Also save a thumbnail image
             thumb = cv2.resize(frames[len(frames)//2], (320, 240))
             thumb_name = filename.replace('.avi', '_thumb.jpg')
-            cv2.imwrite(thumb_name, thumb)
+            safe_image_write(thumb_name, thumb, cv2)
 
             # Log as security event
             self.log_security_event(f"VIDEO_{event_type}", person_name, 0, "front_door", f"Saved clip: {filename}")

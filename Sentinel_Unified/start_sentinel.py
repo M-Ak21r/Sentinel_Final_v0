@@ -49,7 +49,7 @@ class SystemOrchestrator:
     # Configuration constants
     MQTT_WARNING_WAIT_SECONDS = 5
     MQTT_CONNECTION_TIMEOUT_SECONDS = 2
-    SHUTDOWN_TIMEOUT_SECONDS = 10
+    SHUTDOWN_TIMEOUT_SECONDS = 30  # Increased to allow file flush and cleanup
     SHUTDOWN_POLL_INTERVAL_SECONDS = 0.5
     MONITOR_INTERVAL_SECONDS = 1
     
@@ -333,22 +333,27 @@ class SystemOrchestrator:
         
         This method:
         1. Sets running flag to False
-        2. Terminates all child processes
-        3. Waits for processes to exit
-        4. Reports system offline
+        2. Sends SIGTERM to all child processes (graceful shutdown signal)
+        3. Waits for processes to exit with extended timeout
+        4. Force kills any remaining processes
+        5. Reports system offline
         """
         print(f"{Colors.YELLOW}[SYSTEM] Shutting down Sentinel...{Colors.RESET}")
         self.running = False
         
-        # Terminate all processes
+        # Send SIGTERM to all processes for graceful shutdown
         for service_name, process in self.processes.items():
             try:
-                print(f"{Colors.YELLOW}[SYSTEM] Stopping {service_name}...{Colors.RESET}")
-                process.terminate()
+                print(f"{Colors.YELLOW}[SYSTEM] Stopping {service_name} (graceful)...{Colors.RESET}")
+                process.terminate()  # Send SIGTERM (graceful)
             except Exception as e:
                 print(f"{Colors.RED}[SYSTEM] Error terminating {service_name}: {e}{Colors.RESET}")
         
-        # Wait for processes to exit (with timeout)
+        # Give services extra time to flush file buffers and release resources
+        print(f"{Colors.YELLOW}[SYSTEM] Waiting for services to flush file buffers...{Colors.RESET}")
+        time.sleep(2)  # Give 2 seconds for immediate cleanup
+        
+        # Wait for processes to exit (with extended timeout)
         timeout = self.SHUTDOWN_TIMEOUT_SECONDS
         start_time = time.time()
         
@@ -356,16 +361,20 @@ class SystemOrchestrator:
             for service_name, process in list(self.processes.items()):
                 try:
                     process.wait(timeout=self.SHUTDOWN_POLL_INTERVAL_SECONDS)
-                    print(f"{Colors.GREEN}[SYSTEM] ✓ {service_name} stopped{Colors.RESET}")
+                    print(f"{Colors.GREEN}[SYSTEM] ✓ {service_name} stopped gracefully{Colors.RESET}")
                     del self.processes[service_name]
                 except subprocess.TimeoutExpired:
                     pass
         
         # Force kill any remaining processes
+        if self.processes:
+            print(f"{Colors.YELLOW}[SYSTEM] Force killing remaining processes...{Colors.RESET}")
+        
         for service_name, process in self.processes.items():
             try:
                 print(f"{Colors.RED}[SYSTEM] Force killing {service_name}...{Colors.RESET}")
                 process.kill()
+                process.wait(timeout=2)  # Wait briefly for kill to complete
             except Exception as e:
                 print(f"{Colors.RED}[SYSTEM] Error killing {service_name}: {e}{Colors.RESET}")
         

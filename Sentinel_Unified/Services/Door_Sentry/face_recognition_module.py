@@ -2,9 +2,14 @@ import cv2
 import numpy as np
 import pickle
 import os
+import sys
 import time
 from datetime import datetime
 import logging
+
+# Add parent directory to path for shared modules
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'Shared'))
+from libs.file_utils import safe_image_write
 
 class FaceRecognition:
     def __init__(self):
@@ -201,9 +206,11 @@ class FaceRecognition:
                         
                         labels.append(self.label_ids[name])
                         
-                        # Save sample image
+                        # Save sample image with verification
                         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
-                        cv2.imwrite(os.path.join(person_dir, f"{name}_{timestamp}.jpg"), roi_gray)
+                        sample_path = os.path.join(person_dir, f"{name}_{timestamp}.jpg")
+                        if not safe_image_write(sample_path, roi_gray, cv2):
+                            self.logger.warning(f"Failed to save training sample: {sample_path}")
                         
                         count += 1
                         
