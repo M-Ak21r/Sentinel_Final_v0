@@ -350,9 +350,9 @@ class DoorSentry:
                                 # Log intruder alert to database with evidence reference
                                 if self.storage is not None:
                                     try:
-                                        description = f"Unknown person detected at front door"
+                                        description = "Unknown person detected at front door"
                                         if evidence_file:
-                                            description = f"Unknown person detected. Evidence saved at {evidence_file}"
+                                            description += f". Evidence saved at {evidence_file}"
                                         
                                         self.storage.log_alert(
                                             alert_type="INTRUDER_DETECTED",
