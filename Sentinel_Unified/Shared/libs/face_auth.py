@@ -6,7 +6,7 @@ using InsightFace (ArcFace) for state-of-the-art face recognition.
 
 Features:
 - Automatic GPU/CPU fallback
-- Centroid embedding strategy for robust recognition
+- MongoDB-based face storage
 - Fast boot with intelligent caching
 - Comprehensive logging
 - Anatomical filtering for quality control
@@ -14,13 +14,22 @@ Features:
 Author: Sentinel System
 """
 
+import sys
 import os
 import logging
-import pickle
 import numpy as np
 from pathlib import Path
 from typing import List, Dict, Optional, Tuple
 import cv2
+from datetime import datetime
+
+# Add Shared directory to path for imports
+current_file = Path(__file__).resolve()
+shared_dir = current_file.parent.parent
+if str(shared_dir) not in sys.path:
+    sys.path.insert(0, str(shared_dir))
+
+from database.mongo_manager import MongoManager
 
 try:
     from insightface.app import FaceAnalysis
@@ -38,11 +47,12 @@ class FaceAuthenticator:
     across the Sentinel system (Door Sentry and Interior Watch).
     
     Attributes:
-        data_path (str): Path to authorized faces directory
         similarity_threshold (float): Minimum cosine similarity for match (0.0-1.0)
         min_face_size (tuple): Minimum face dimensions (width, height)
         app (FaceAnalysis): InsightFace application instance
-        known_faces (dict): Dictionary mapping names to centroid embeddings
+        known_face_encodings (list): List of face embeddings (numpy arrays)
+        known_face_names (list): List of corresponding names
+        mongo (MongoManager): MongoDB connection manager
         logger (logging.Logger): Logger instance
     """
     
@@ -59,8 +69,8 @@ class FaceAuthenticator:
         Initialize the FaceAuthenticator.
         
         Args:
-            data_path: Path to authorized faces directory. If None, defaults to
-                      ../../data/authorized_faces relative to this file.
+            data_path: (Deprecated, kept for backward compatibility) 
+                      Path to authorized faces directory. No longer used.
             similarity_threshold: Minimum cosine similarity score (0.0-1.0) for
                                 a face to be considered a match. Default: 0.5
             min_face_size: Minimum face dimensions (width, height) in pixels.
@@ -73,35 +83,25 @@ class FaceAuthenticator:
         self.similarity_threshold = similarity_threshold
         self.min_face_size = min_face_size
         
-        # Resolve data path
-        if data_path is None:
-            # Default to ../../data/authorized_faces relative to this file
-            current_file = Path(__file__).resolve()
-            self.data_path = current_file.parent.parent.parent / "data" / "authorized_faces"
-        else:
-            self.data_path = Path(data_path)
-        
-        self.data_path = self.data_path.resolve()
-        self.cache_file = self.data_path / "encodings.pkl"
-        
-        # Create data directory if it doesn't exist
-        self.data_path.mkdir(parents=True, exist_ok=True)
-        
         self.logger.info(f"Initializing FaceAuthenticator")
-        self.logger.info(f"Data path: {self.data_path}")
         self.logger.info(f"Similarity threshold: {similarity_threshold}")
         self.logger.info(f"Minimum face size: {min_face_size}")
+        
+        # Initialize MongoDB connection
+        self.mongo = MongoManager()
+        self.logger.info("MongoDB connection initialized")
         
         # Initialize InsightFace model
         self.app = self._initialize_model()
         
-        # Dictionary to store known face embeddings {name: centroid_embedding}
-        self.known_faces = {}
+        # Lists to store known face encodings and names
+        self.known_face_encodings = []
+        self.known_face_names = []
         
-        # Load or build face encodings cache
-        self._load_or_build_cache()
+        # Load face encodings from database
+        self.load_faces_from_db()
         
-        self.logger.info(f"FaceAuthenticator initialized with {len(self.known_faces)} known faces")
+        self.logger.info(f"FaceAuthenticator initialized with {len(self.known_face_names)} known faces")
     
     def _setup_logging(self) -> logging.Logger:
         """
@@ -186,183 +186,160 @@ class FaceAuthenticator:
             else:
                 raise RuntimeError(f"Failed to initialize face recognition model: {e}")
     
-    def _load_or_build_cache(self):
+    def load_faces_from_db(self):
         """
-        Load face encodings from cache or build new cache if needed.
-        
-        Cache is rebuilt if:
-        - Cache file doesn't exist
-        - Cache file is older than the data directory
-        """
-        should_rebuild = False
-        
-        if not self.cache_file.exists():
-            self.logger.info("No cache file found, building new cache...")
-            should_rebuild = True
-        else:
-            # Check if cache is outdated
-            cache_mtime = self.cache_file.stat().st_mtime
-            data_mtime = self.data_path.stat().st_mtime
-            
-            if data_mtime > cache_mtime:
-                self.logger.info("Cache is outdated (data directory modified), rebuilding...")
-                should_rebuild = True
-            else:
-                # Try to load cache
-                try:
-                    with open(self.cache_file, 'rb') as f:
-                        self.known_faces = pickle.load(f)
-                    self.logger.info(f"Loaded {len(self.known_faces)} faces from cache")
-                    
-                    # Validate cache data
-                    if not isinstance(self.known_faces, dict):
-                        self.logger.warning("Invalid cache format, rebuilding...")
-                        should_rebuild = True
-                except Exception as e:
-                    self.logger.error(f"Error loading cache: {e}, rebuilding...")
-                    should_rebuild = True
-        
-        if should_rebuild:
-            self._build_cache()
-    
-    def _build_cache(self):
-        """
-        Build face encodings cache from authorized faces directory.
+        Load face encodings from MongoDB database.
         
         This method:
-        1. Scans subdirectories in data_path (each subdirectory = one person)
-        2. Loads all valid images for each person
-        3. Extracts face embeddings from each image
-        4. Computes centroid (mean) embedding for each person
-        5. Normalizes the centroid embeddings
-        6. Saves the {name: centroid_embedding} map to cache file
+        1. Retrieves all documents from the 'authorized_faces' collection
+        2. Extracts name and embedding from each document
+        3. Converts embeddings from list to numpy array
+        4. Stores them in the local cache (known_face_encodings and known_face_names)
         """
-        self.logger.info("Building face encodings cache...")
-        self.known_faces = {}
+        self.logger.info("Loading face encodings from MongoDB...")
         
-        if not self.data_path.exists():
-            self.logger.warning(f"Data path does not exist: {self.data_path}")
-            return
+        # Clear existing data
+        self.known_face_encodings = []
+        self.known_face_names = []
         
-        # Iterate through person directories
-        person_dirs = [d for d in self.data_path.iterdir() if d.is_dir()]
-        
-        if not person_dirs:
-            self.logger.warning(f"No person directories found in {self.data_path}")
-            return
-        
-        for person_dir in person_dirs:
-            person_name = person_dir.name
-            self.logger.info(f"Processing faces for: {person_name}")
+        try:
+            # Get the authorized_faces collection
+            collection = self.mongo.get_collection('authorized_faces')
             
-            # Collect all embeddings for this person
-            embeddings = []
+            if collection is None:
+                self.logger.error("Failed to get authorized_faces collection")
+                return
             
-            # Find all image files using class constant
-            image_files = [
-                f for f in person_dir.iterdir()
-                if f.is_file() and f.suffix.lower() in self.VALID_IMAGE_EXTENSIONS
-            ]
-            
-            if not image_files:
-                self.logger.warning(f"No images found for {person_name}")
-                continue
-            
-            for image_file in image_files:
+            # Iterate through all documents
+            for doc in collection.find({"active": True}):
                 try:
-                    # Load image
-                    img = cv2.imread(str(image_file))
+                    name = doc.get('name')
+                    embedding_list = doc.get('embedding')
                     
-                    if img is None:
-                        self.logger.warning(f"Could not load image: {image_file}")
+                    if name is None or embedding_list is None:
+                        self.logger.warning(f"Skipping document with missing name or embedding: {doc.get('_id')}")
                         continue
                     
-                    # Detect faces
-                    faces = self.app.get(img)
+                    # Convert embedding from list to numpy array
+                    embedding = np.array(embedding_list, dtype=np.float32)
                     
-                    if not faces:
-                        self.logger.warning(f"No face detected in: {image_file}")
-                        continue
-                    
-                    # Use the first (and hopefully only) face
-                    if len(faces) > 1:
-                        self.logger.warning(
-                            f"Multiple faces ({len(faces)}) detected in {image_file}, "
-                            f"using first face only"
-                        )
-                    
-                    face = faces[0]
-                    embedding = face.embedding
-                    
-                    # Normalize embedding (check for zero norm)
-                    embedding_norm = np.linalg.norm(embedding)
-                    if embedding_norm > 0:
-                        embedding = embedding / embedding_norm
-                        embeddings.append(embedding)
-                    else:
-                        self.logger.warning(
-                            f"Zero embedding norm in {image_file}, skipping"
-                        )
+                    # Store in local cache
+                    self.known_face_encodings.append(embedding)
+                    self.known_face_names.append(name)
                     
                 except Exception as e:
-                    self.logger.error(f"Error processing {image_file}: {e}")
+                    self.logger.error(f"Error processing document {doc.get('_id')}: {e}")
                     continue
             
-            if embeddings:
-                # Compute centroid (mean) embedding
-                centroid = np.mean(embeddings, axis=0)
-                
-                # Normalize the centroid (check for zero norm)
-                centroid_norm = np.linalg.norm(centroid)
-                if centroid_norm > 0:
-                    centroid = centroid / centroid_norm
-                    
-                    self.known_faces[person_name] = centroid
-                    self.logger.info(
-                        f"Created centroid embedding for {person_name} "
-                        f"from {len(embeddings)} images"
-                    )
-                else:
-                    self.logger.warning(
-                        f"Zero centroid norm for {person_name}, skipping"
-                    )
-            else:
-                self.logger.warning(f"No valid embeddings extracted for {person_name}")
-        
-        # Save cache
-        try:
-            with open(self.cache_file, 'wb') as f:
-                pickle.dump(self.known_faces, f)
-            self.logger.info(f"Cache saved with {len(self.known_faces)} faces")
+            self.logger.info(f"Loaded {len(self.known_face_names)} faces from MongoDB")
+            
         except Exception as e:
-            self.logger.error(f"Error saving cache: {e}")
+            self.logger.error(f"Error loading faces from MongoDB: {e}")
+    
+    def register_face(self, name: str, image: np.ndarray) -> bool:
+        """
+        Register a new face in the database.
+        
+        This is a NEW method to register a face programmatically.
+        
+        Args:
+            name: Name of the person to register
+            image: CV2 image containing the face (numpy array in BGR format)
+            
+        Returns:
+            True if face was successfully registered, False otherwise
+        """
+        self.logger.info(f"Registering face for: {name}")
+        
+        try:
+            # Get face embedding from the image
+            embedding = self.get_face_embedding(image)
+            
+            if embedding is None:
+                self.logger.warning(f"No face detected in image for {name}")
+                return False
+            
+            # Create document for MongoDB
+            doc = {
+                "name": name,
+                "embedding": embedding.tolist(),  # Convert numpy to list for MongoDB
+                "created_at": datetime.now(),
+                "active": True
+            }
+            
+            # Insert into authorized_faces collection
+            collection = self.mongo.get_collection('authorized_faces')
+            
+            if collection is None:
+                self.logger.error("Failed to get authorized_faces collection")
+                return False
+            
+            result = collection.insert_one(doc)
+            
+            # Update local cache
+            self.known_face_encodings.append(embedding)
+            self.known_face_names.append(name)
+            
+            self.logger.info(f"Successfully registered face for {name} with ID: {result.inserted_id}")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Error registering face for {name}: {e}")
+            return False
+    
+    def get_face_embedding(self, image: np.ndarray) -> Optional[np.ndarray]:
+        """
+        Extract face embedding from an image.
+        
+        Args:
+            image: CV2 image containing a face (numpy array in BGR format)
+            
+        Returns:
+            Normalized face embedding as numpy array, or None if no face detected
+        """
+        try:
+            # Detect faces in the image
+            faces = self.app.get(image)
+            
+            if not faces:
+                self.logger.debug("No face detected in image")
+                return None
+            
+            if len(faces) > 1:
+                self.logger.warning(f"Multiple faces ({len(faces)}) detected, using first face only")
+            
+            # Use the first face
+            face = faces[0]
+            embedding = face.embedding
+            
+            # Normalize embedding
+            embedding_norm = np.linalg.norm(embedding)
+            if embedding_norm > 0:
+                embedding = embedding / embedding_norm
+                return embedding
+            else:
+                self.logger.warning("Detected face has zero embedding norm")
+                return None
+                
+        except Exception as e:
+            self.logger.error(f"Error extracting face embedding: {e}")
+            return None
     
     def reload_faces(self):
         """
-        Force reload of face encodings by deleting cache and rebuilding.
+        Force reload of face encodings from MongoDB.
         
         This method should be called when:
-        - New faces are added to the authorized_faces directory
-        - Existing face images are updated or removed
+        - New faces are added to the database
+        - Existing face records are updated or removed
         - The system needs to refresh its recognition database
         
         This is typically triggered by the Web Interface via MQTT when
         a user uploads a new photo.
         """
-        self.logger.info("Force reloading face encodings...")
-        
-        # Delete cache file if it exists
-        if self.cache_file.exists():
-            try:
-                self.cache_file.unlink()
-                self.logger.info("Cache file deleted")
-            except Exception as e:
-                self.logger.error(f"Error deleting cache file: {e}")
-        
-        # Rebuild cache
-        self._build_cache()
-        
-        self.logger.info(f"Face encodings reloaded: {len(self.known_faces)} faces")
+        self.logger.info("Force reloading face encodings from MongoDB...")
+        self.load_faces_from_db()
+        self.logger.info(f"Face encodings reloaded: {len(self.known_face_names)} faces")
     
     def identify_face(self, frame: np.ndarray) -> List[Dict]:
         """
@@ -451,14 +428,14 @@ class FaceAuthenticator:
                 best_confidence = 0.0
                 is_authorized = False
                 
-                if self.known_faces:
-                    for name, known_embedding in self.known_faces.items():
+                if self.known_face_encodings:
+                    for i, known_embedding in enumerate(self.known_face_encodings):
                         # Calculate cosine similarity (dot product of normalized vectors)
                         similarity = np.dot(embedding, known_embedding)
                         
                         if similarity > best_confidence:
                             best_confidence = float(similarity)
-                            best_name = name
+                            best_name = self.known_face_names[i]
                     
                     # Check if confidence exceeds threshold
                     if best_confidence >= self.similarity_threshold:
@@ -496,7 +473,7 @@ class FaceAuthenticator:
         Returns:
             List of person names that are registered in the system
         """
-        return list(self.known_faces.keys())
+        return list(self.known_face_names)
     
     def get_stats(self) -> Dict:
         """
@@ -506,10 +483,8 @@ class FaceAuthenticator:
             Dictionary containing system statistics
         """
         return {
-            "num_known_faces": len(self.known_faces),
+            "num_known_faces": len(self.known_face_names),
             "known_faces": self.get_known_faces(),
-            "data_path": str(self.data_path),
-            "cache_exists": self.cache_file.exists(),
             "similarity_threshold": self.similarity_threshold,
             "min_face_size": self.min_face_size
         }
@@ -538,8 +513,6 @@ if __name__ == "__main__":
     print("\nSystem Statistics:")
     print(f"  Known faces: {stats['num_known_faces']}")
     print(f"  Names: {stats['known_faces']}")
-    print(f"  Data path: {stats['data_path']}")
-    print(f"  Cache exists: {stats['cache_exists']}")
     print(f"  Similarity threshold: {stats['similarity_threshold']}")
     print(f"  Min face size: {stats['min_face_size']}")
     
