@@ -152,6 +152,8 @@ void processCommand(const char* command) {
     
     if (strcmp(command, "FIRE") == 0) {
         // Activate shooter motors for 500ms
+        // Note: Using blocking delay as specified in requirements
+        // For non-blocking implementation, use millis() timing in future version
         digitalWrite(SHOOTER_MOTOR_PIN_1, HIGH);
         digitalWrite(SHOOTER_MOTOR_PIN_2, HIGH);
         Serial.println("ACK:FIRE_START");
