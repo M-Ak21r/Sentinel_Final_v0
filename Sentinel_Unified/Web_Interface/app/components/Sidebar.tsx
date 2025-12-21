@@ -50,6 +50,7 @@ export default function Sidebar() {
       <nav className="flex-1 p-4 space-y-2">
         <NavItem href="/dashboard" icon="📊" label="Dashboard" isOpen={isOpen} />
         <NavItem href="/dashboard/feeds" icon="📹" label="Live Feeds" isOpen={isOpen} />
+        <NavItem href="/dashboard/evidence" icon="📸" label="Evidence" isOpen={isOpen} />
         <NavItem href="/dashboard/database" icon="🗄️" label="Database" isOpen={isOpen} />
         <NavItem href="/dashboard/faces" icon="👤" label="Authorized Faces" isOpen={isOpen} />
         <NavItem href="/dashboard/settings" icon="⚙️" label="Settings" isOpen={isOpen} />
