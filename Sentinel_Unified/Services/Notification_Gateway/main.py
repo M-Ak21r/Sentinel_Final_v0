@@ -89,7 +89,7 @@ class NotificationGateway:
         """
         try:
             payload = json.loads(msg.payload.decode('utf-8'))
-            logger.debug(f"Received MQTT message on {msg.topic}: {payload}")
+            logger.debug(f"Received MQTT message on {msg.topic} - Size: {len(msg.payload)} bytes")
             
             # Normalize and process the alert
             self._process_alert(payload)
@@ -136,8 +136,8 @@ class NotificationGateway:
                 else:
                     logger.debug(f"Interior Watch alert - level: {level} (numeric) -> LOW PRIORITY (Info)")
             else:
-                # Unknown level type - log as info only
-                logger.info(f"Alert with unknown level type: {type(level)} - {payload}")
+                # Unknown level type - log as info only (sanitized)
+                logger.info(f"Alert with unknown level type: {type(level).__name__}")
                 return
             
             # Process based on priority
