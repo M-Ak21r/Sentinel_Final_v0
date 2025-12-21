@@ -1,18 +1,17 @@
 import { NextRequest, NextResponse } from 'next/server'
-import { promises as fs } from 'fs'
-import path from 'path'
-import { publishCommand } from '@/lib/mqtt-publisher'
 
 /**
- * POST - Upload a new face image to the authorized faces directory
+ * POST - Upload a new face image to MongoDB via Python Flask API
  * 
- * This endpoint handles multipart/form-data uploads and:
- * 1. Saves the image to the file system
- * 2. Sends an MQTT command to reload faces in Python services
+ * This endpoint proxies the upload request to the Door Sentry service which:
+ * 1. Validates and processes the image
+ * 2. Extracts face embeddings using InsightFace
+ * 3. Stores the face data in MongoDB
+ * 4. Broadcasts RELOAD_FACES command to all services via MQTT
  */
 export async function POST(request: NextRequest) {
   try {
-    // Parse the FormData
+    // Parse the FormData from the incoming request
     const formData = await request.formData()
     const name = formData.get('name') as string
     const file = formData.get('file') as File
@@ -34,70 +33,63 @@ export async function POST(request: NextRequest) {
       )
     }
 
-    // Validate file size (max 5MB)
-    const maxSize = 5 * 1024 * 1024 // 5MB in bytes
+    // Validate file size (max 10MB to match Python API limit)
+    const maxSize = 10 * 1024 * 1024 // 10MB in bytes
     if (file.size > maxSize) {
       return NextResponse.json(
-        { success: false, message: 'File too large. Maximum size is 5MB.' },
+        { success: false, message: 'File too large. Maximum size is 10MB.' },
         { status: 400 }
       )
     }
 
-    // Sanitize the name
-    let sanitizedName = name.trim()
-    // Replace spaces with underscores
-    sanitizedName = sanitizedName.replace(/\s+/g, '_')
-    // Remove any non-alphanumeric characters (keep underscores and hyphens)
-    sanitizedName = sanitizedName.replace(/[^a-zA-Z0-9_-]/g, '')
+    // Prepare FormData to forward to Python service
+    // The Python API expects 'image' field name, not 'file'
+    const pythonFormData = new FormData()
+    pythonFormData.append('name', name)
+    pythonFormData.append('image', file)
 
-    if (!sanitizedName) {
-      return NextResponse.json(
-        { success: false, message: 'Invalid name after sanitization' },
-        { status: 400 }
-      )
-    }
+    // Forward the request to the Python Door Sentry service
+    const pythonServiceUrl = process.env.DOOR_SENTRY_URL || 'http://127.0.0.1:5001'
+    const pythonEndpoint = `${pythonServiceUrl}/api/faces/register`
 
-    // Resolve the Shared Data path relative to process.cwd()
-    // From Web_Interface root, go up one level to Sentinel_Unified, then to Shared/data/authorized_faces
-    const sharedDataPath = path.join(
-      process.cwd(),
-      '..',
-      'Shared',
-      'data',
-      'authorized_faces',
-      sanitizedName
-    )
+    console.log(`[Face Upload] Forwarding request to Python service: ${pythonEndpoint}`)
+    console.log(`[Face Upload] Name: ${name}, File size: ${file.size} bytes`)
 
-    // Create the directory if it doesn't exist
-    await fs.mkdir(sharedDataPath, { recursive: true })
-
-    // Convert the Blob/File to a Buffer
-    const arrayBuffer = await file.arrayBuffer()
-    const buffer = Buffer.from(arrayBuffer)
-
-    // Save the file as image.jpg
-    const filePath = path.join(sharedDataPath, 'image.jpg')
-    await fs.writeFile(filePath, buffer)
-
-    console.log(`[Face Upload] Saved face image for ${sanitizedName} at ${filePath}`)
-
-    // System Sync - Publish MQTT command to reload faces
     try {
-      await publishCommand('sentinel/commands', {
-        target: 'all',
-        action: 'RELOAD_FACES'
+      const response = await fetch(pythonEndpoint, {
+        method: 'POST',
+        body: pythonFormData,
       })
-      console.log('[Face Upload] MQTT command published: RELOAD_FACES')
-    } catch (mqttError) {
-      console.error('[Face Upload] Failed to publish MQTT command:', mqttError)
-      // Continue anyway - the file is saved, manual restart will work
-    }
 
-    return NextResponse.json({
-      success: true,
-      message: 'Face registered & System updated',
-      name: sanitizedName
-    })
+      const responseData = await response.json()
+
+      if (response.ok) {
+        console.log(`[Face Upload] Success: ${responseData.message}`)
+        return NextResponse.json({
+          success: true,
+          message: 'Face registered in MongoDB',
+          name: name
+        })
+      } else {
+        console.error(`[Face Upload] Python service error: ${responseData.error}`)
+        return NextResponse.json(
+          { 
+            success: false, 
+            message: responseData.error || 'Failed to register face'
+          },
+          { status: response.status }
+        )
+      }
+    } catch (fetchError) {
+      console.error('[Face Upload] Failed to connect to Door Sentry service:', fetchError)
+      return NextResponse.json(
+        { 
+          success: false, 
+          message: 'Door Sentry service unreachable. Please ensure the service is running.' 
+        },
+        { status: 503 }
+      )
+    }
 
   } catch (error) {
     console.error('[Face Upload] Error:', error)
