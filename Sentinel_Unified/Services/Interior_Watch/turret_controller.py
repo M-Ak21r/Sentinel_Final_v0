@@ -29,14 +29,16 @@ class TurretController:
     """
     
     # Visual servoing constants
+    # Note: These are tuned for 640x480 frame size. Adjust for different resolutions.
     DEAD_ZONE_PIXELS = 20  # Minimum error to trigger correction (prevents jitter)
-    PROPORTIONAL_GAIN = 0.1  # P-gain for error-to-angle conversion
+    PROPORTIONAL_GAIN = 0.1  # P-gain for error-to-angle conversion (tune as needed)
     
     def __init__(self, serial_port='COM11', baud_rate=9600):
         """Initialize turret controller with serial connection to Arduino.
         
         Args:
-            serial_port: Serial port name (default 'COM11')
+            serial_port: Serial port name (default 'COM11' for Windows,
+                        use '/dev/ttyUSB0' or '/dev/ttyACM0' for Linux/macOS)
             baud_rate: Serial baud rate (default 9600)
         """
         self.serial_port = serial_port
@@ -160,13 +162,15 @@ class TurretController:
         
         if abs(error_x) > self.DEAD_ZONE_PIXELS:
             # Positive error_x means target is to the RIGHT of center
-            # Need to pan RIGHT (decrease angle for standard servo)
-            # Negative to make servo angle decrease when target is right
+            # For standard servo mounting: lower angle pans right, higher angle pans left
+            # Therefore, use negative gain to decrease angle when target is right
+            # Note: May need sign adjustment based on actual servo mounting orientation
             pan_correction = -error_x * self.PROPORTIONAL_GAIN
         
         if abs(error_y) > self.DEAD_ZONE_PIXELS:
             # Positive error_y means target is BELOW center
-            # Need to tilt DOWN (increase angle for standard servo)
+            # For standard servo mounting: higher angle tilts down, lower angle tilts up
+            # Note: May need sign adjustment based on actual servo mounting orientation
             tilt_correction = error_y * self.PROPORTIONAL_GAIN
         
         logger.debug(f"Error: X={error_x:.1f}px, Y={error_y:.1f}px | "
@@ -353,36 +357,36 @@ if __name__ == "__main__":
         
         # Simulate tracking a target
         # Target bbox at (320, 240, 50, 50) in 640x480 frame (centered)
-        print("\nTest 1: Centered target (should not move)")
+        logger.info("Test 1: Centered target (should not move)")
         turret.track_target((320, 240, 50, 50), (480, 640, 3))
         time.sleep(1)
         
         # Target to the right (high X)
-        print("\nTest 2: Target to the right")
+        logger.info("Test 2: Target to the right")
         turret.track_target((450, 240, 50, 50), (480, 640, 3))
         time.sleep(1)
         
         # Target to the left (low X)
-        print("\nTest 3: Target to the left")
+        logger.info("Test 3: Target to the left")
         turret.track_target((100, 240, 50, 50), (480, 640, 3))
         time.sleep(1)
         
         # Target above (low Y)
-        print("\nTest 4: Target above center")
+        logger.info("Test 4: Target above center")
         turret.track_target((320, 100, 50, 50), (480, 640, 3))
         time.sleep(1)
         
         # Target below (high Y)
-        print("\nTest 5: Target below center")
+        logger.info("Test 5: Target below center")
         turret.track_target((320, 400, 50, 50), (480, 640, 3))
         time.sleep(1)
         
         # Re-center
-        print("\nRe-centering turret")
+        logger.info("Re-centering turret")
         turret.center_turret()
         time.sleep(1)
         
-        print("\nCurrent position:", turret.get_position())
+        logger.info(f"Current position: {turret.get_position()}")
         
     finally:
         turret.cleanup()
