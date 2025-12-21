@@ -507,6 +507,31 @@ app = Flask(__name__)
 door_sentry = None
 
 
+def validate_name(name):
+    """
+    Validate a person's name for face registration/deletion.
+    
+    Args:
+        name (str): Name to validate
+        
+    Returns:
+        tuple: (is_valid, error_message, cleaned_name)
+    """
+    if not name or not name.strip():
+        return False, "Name cannot be empty", None
+    
+    cleaned_name = name.strip()
+    
+    if len(cleaned_name) > 100:
+        return False, "Name too long (max 100 characters)", None
+    
+    # Ensure name starts and ends with alphanumeric, allows spaces/hyphens/underscores in between
+    if not re.match(r'^[a-zA-Z0-9]+(?:[\s\-_][a-zA-Z0-9]+)*$', cleaned_name):
+        return False, "Name contains invalid characters or format", None
+    
+    return True, None, cleaned_name
+
+
 @app.route('/video_feed')
 def video_feed():
     """
@@ -575,18 +600,12 @@ def register_face():
         image_file = request.files['image']
         name = request.form['name']
         
-        # Validate name (max 100 chars, alphanumeric + spaces/hyphens/underscores only)
-        if not name or not name.strip():
-            return jsonify({"error": "Name cannot be empty"}), 400
+        # Validate name
+        is_valid, error_msg, cleaned_name = validate_name(name)
+        if not is_valid:
+            return jsonify({"error": error_msg}), 400
         
-        name = name.strip()
-        
-        if len(name) > 100:
-            return jsonify({"error": "Name too long (max 100 characters)"}), 400
-        
-        # Only allow alphanumeric, spaces, hyphens, and underscores
-        if not re.match(r'^[a-zA-Z0-9\s\-_]+$', name):
-            return jsonify({"error": "Name contains invalid characters"}), 400
+        name = cleaned_name
         
         # Check file size (max 10MB)
         image_file.seek(0, 2)  # Seek to end
@@ -601,7 +620,7 @@ def register_face():
             file_bytes = image_file.read()
             
             # Validate it's actually an image by checking magic bytes
-            if not (file_bytes.startswith(b'\xff\xd8\xff') or  # JPEG
+            if not (file_bytes.startswith(b'\xff\xd8') or    # JPEG
                     file_bytes.startswith(b'\x89PNG') or      # PNG
                     file_bytes.startswith(b'BM')):            # BMP
                 return jsonify({"error": "Invalid image format (only JPEG, PNG, BMP allowed)"}), 400
@@ -665,18 +684,12 @@ def delete_face():
         
         name = data['name']
         
-        # Validate name (max 100 chars, alphanumeric + spaces/hyphens/underscores only)
-        if not name or not name.strip():
-            return jsonify({"error": "Name cannot be empty"}), 400
+        # Validate name
+        is_valid, error_msg, cleaned_name = validate_name(name)
+        if not is_valid:
+            return jsonify({"error": error_msg}), 400
         
-        name = name.strip()
-        
-        if len(name) > 100:
-            return jsonify({"error": "Name too long (max 100 characters)"}), 400
-        
-        # Only allow alphanumeric, spaces, hyphens, and underscores
-        if not re.match(r'^[a-zA-Z0-9\s\-_]+$', name):
-            return jsonify({"error": "Name contains invalid characters"}), 400
+        name = cleaned_name
         
         # Delete from MongoDB
         collection = door_sentry.auth.mongo.get_collection('authorized_faces')
