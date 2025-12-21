@@ -1,8 +1,8 @@
-import { NextRequest, NextResponse } from 'next/server'
+import { NextResponse } from 'next/server'
 import { getCollection } from '@/lib/mongo'
 
 interface SecurityEvent {
-  _id?: any
+  _id?: unknown
   topic: string
   level?: string
   event?: string
@@ -14,7 +14,7 @@ interface SecurityEvent {
 }
 
 // GET - Fetch recent security events
-export async function GET(request: NextRequest) {
+export async function GET() {
   try {
     const eventsCollection = await getCollection<SecurityEvent>('events')
     
