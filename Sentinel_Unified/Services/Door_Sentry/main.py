@@ -19,6 +19,7 @@ import json
 import time
 import logging
 import numpy as np
+import re
 from datetime import datetime
 from flask import Flask, Response, request, jsonify
 from dotenv import load_dotenv
@@ -574,15 +575,38 @@ def register_face():
         image_file = request.files['image']
         name = request.form['name']
         
-        # Validate name
+        # Validate name (max 100 chars, alphanumeric + spaces/hyphens/underscores only)
         if not name or not name.strip():
             return jsonify({"error": "Name cannot be empty"}), 400
         
         name = name.strip()
         
+        if len(name) > 100:
+            return jsonify({"error": "Name too long (max 100 characters)"}), 400
+        
+        # Only allow alphanumeric, spaces, hyphens, and underscores
+        if not re.match(r'^[a-zA-Z0-9\s\-_]+$', name):
+            return jsonify({"error": "Name contains invalid characters"}), 400
+        
+        # Check file size (max 10MB)
+        image_file.seek(0, 2)  # Seek to end
+        file_size = image_file.tell()
+        image_file.seek(0)  # Reset to beginning
+        
+        if file_size > 10 * 1024 * 1024:  # 10MB
+            return jsonify({"error": "Image file too large (max 10MB)"}), 400
+        
         # Read image file into numpy array
         try:
-            nparr = np.frombuffer(image_file.read(), np.uint8)
+            file_bytes = image_file.read()
+            
+            # Validate it's actually an image by checking magic bytes
+            if not (file_bytes.startswith(b'\xff\xd8\xff') or  # JPEG
+                    file_bytes.startswith(b'\x89PNG') or      # PNG
+                    file_bytes.startswith(b'BM')):            # BMP
+                return jsonify({"error": "Invalid image format (only JPEG, PNG, BMP allowed)"}), 400
+            
+            nparr = np.frombuffer(file_bytes, np.uint8)
             img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
             
             if img is None:
@@ -610,7 +634,7 @@ def register_face():
             
     except Exception as e:
         logger.error(f"Error in register_face endpoint: {e}", exc_info=True)
-        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 @app.route('/api/faces/delete', methods=['DELETE'])
@@ -641,11 +665,18 @@ def delete_face():
         
         name = data['name']
         
-        # Validate name
+        # Validate name (max 100 chars, alphanumeric + spaces/hyphens/underscores only)
         if not name or not name.strip():
             return jsonify({"error": "Name cannot be empty"}), 400
         
         name = name.strip()
+        
+        if len(name) > 100:
+            return jsonify({"error": "Name too long (max 100 characters)"}), 400
+        
+        # Only allow alphanumeric, spaces, hyphens, and underscores
+        if not re.match(r'^[a-zA-Z0-9\s\-_]+$', name):
+            return jsonify({"error": "Name contains invalid characters"}), 400
         
         # Delete from MongoDB
         collection = door_sentry.auth.mongo.get_collection('authorized_faces')
@@ -673,7 +704,7 @@ def delete_face():
             
     except Exception as e:
         logger.error(f"Error in delete_face endpoint: {e}", exc_info=True)
-        return jsonify({"error": f"Internal server error: {str(e)}"}), 500
+        return jsonify({"error": "Internal server error"}), 500
 
 
 def main():
