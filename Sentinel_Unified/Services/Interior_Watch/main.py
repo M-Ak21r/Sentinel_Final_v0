@@ -49,7 +49,7 @@ ASSET_CLASSES = {CLASS_LAPTOP, CLASS_CELL_PHONE}
 
 # Theft detection configuration
 FRAMES_UNTIL_THEFT = 30  # Asset must be missing for 30 frames (~1 second)
-PROXIMITY_THRESHOLD = 150  # Pixels - how close a person must be to the asset
+PROXIMITY_THRESHOLD = 300  # Pixels - how close a person must be to the asset
 STALE_ASSET_MULTIPLIER = 3  # Multiplier for determining when to clean up stale assets
 
 # Alert level constants
@@ -356,6 +356,21 @@ class InteriorWatchService:
         x1, y1, x2, y2 = bbox
         return ((x1 + x2) / 2, (y1 + y2) / 2)
     
+    def _point_in_bbox(self, point, bbox):
+        """
+        Check if a point is inside a bounding box.
+        
+        Args:
+            point (tuple): (x, y) coordinates
+            bbox (list): [x1, y1, x2, y2]
+        
+        Returns:
+            bool: True if point is inside bbox, False otherwise
+        """
+        x, y = point
+        x1, y1, x2, y2 = bbox
+        return x1 <= x <= x2 and y1 <= y <= y2
+    
     def process_frame(self):
         """
         Process a single frame - the core brain of theft detection.
@@ -451,16 +466,28 @@ class InteriorWatchService:
                                 if asset_info['missing_frames'] == FRAMES_UNTIL_THEFT:
                                     logger.warning(f"POTENTIAL THEFT: Asset {asset_id} missing for {FRAMES_UNTIL_THEFT} frames")
                                     
-                                    # Step 3: Find closest person to the asset's last known position
+                                    # Step 3: Find suspect using containment check first, then proximity
                                     last_pos = asset_info['last_pos']
                                     closest_person = None
                                     closest_distance = float('inf')
                                     
+                                    # First, check if the asset's last position is inside any person's bounding box
                                     for person in detected_persons:
-                                        distance = self._calculate_distance(last_pos, person['center'])
-                                        if distance < closest_distance and distance < PROXIMITY_THRESHOLD:
-                                            closest_distance = distance
+                                        if self._point_in_bbox(last_pos, person['bbox']):
+                                            # Asset position is inside this person's bounding box - strong suspect!
                                             closest_person = person
+                                            closest_distance = 0  # Direct containment
+                                            logger.debug(f"Asset {asset_id} last position is inside person's bounding box")
+                                            break
+                                    
+                                    # If no containment found, fallback to proximity check with relaxed threshold
+                                    if closest_person is None:
+                                        for person in detected_persons:
+                                            distance = self._calculate_distance(last_pos, person['center'])
+                                            if distance < closest_distance:
+                                                closest_distance = distance
+                                                if distance < PROXIMITY_THRESHOLD:
+                                                    closest_person = person
                                     
                                     if closest_person:
                                         # We have a suspect - verify identity
@@ -508,6 +535,7 @@ class InteriorWatchService:
                                                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                                     else:
                                         # No person nearby - might be a false positive
+                                        logger.debug(f"Closest person was {closest_distance:.1f}px away (Threshold: {PROXIMITY_THRESHOLD}px)")
                                         logger.info(f"Asset {asset_id} disappeared but no suspect nearby")
                             
                             # Clean up old asset states (missing for too long)
