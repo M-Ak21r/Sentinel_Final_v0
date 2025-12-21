@@ -18,6 +18,7 @@ import json
 import time
 import logging
 import signal
+from collections import deque
 from datetime import datetime
 from flask import Flask, Response, jsonify, send_from_directory
 from dotenv import load_dotenv
@@ -59,6 +60,7 @@ ALERT_LEVEL_INFO = 3
 
 # Video recording constants
 EVIDENCE_FILENAME_PREFIX = "theft_evidence"
+MIN_RECORDING_FRAMES = 300  # Minimum recording duration: 10 seconds at 30 FPS
 
 # Visualization constants
 FLASH_INTERVAL_FRAMES = 10  # Flash every N frames
@@ -100,6 +102,10 @@ class InteriorWatchService:
         self.current_recording_path = None
         self.running = False
         self.process_every_n_frames = 2  # Process YOLO every 2nd frame for better FPS
+        self.recording_frame_count = 0  # Track frames recorded for minimum duration enforcement
+        
+        # Initialize ring buffer for pre-event recording (stores ~5 seconds at 30 FPS)
+        self.video_buffer = deque(maxlen=150)
         
         # Initialize FaceAuthenticator
         logger.info("Initializing FaceAuthenticator...")
@@ -220,13 +226,19 @@ class InteriorWatchService:
                     logger.info("Received STOP_ALARM command - silencing alarm")
                     self.alarm_active = False
                     
-                    # Release video writer if recording
-                    if self.video_writer is not None:
-                        self.video_writer.release()
-                        self.video_writer = None
-                        self.recording_active = False
-                        logger.info(f"Recording stopped: {self.current_recording_path}")
-                        logger.info("Evidence saved successfully")
+                    # Enforce minimum recording duration before stopping
+                    if self.recording_frame_count >= MIN_RECORDING_FRAMES:
+                        # Release video writer if recording
+                        if self.video_writer is not None:
+                            self.video_writer.release()
+                            self.video_writer = None
+                            self.recording_active = False
+                            logger.info(f"Recording stopped: {self.current_recording_path}")
+                            logger.info("Evidence saved successfully")
+                    else:
+                        # Continue recording until minimum duration is met
+                        frames_remaining = MIN_RECORDING_FRAMES - self.recording_frame_count
+                        logger.info(f"Minimum recording duration not met. Need {frames_remaining} more frames before stopping.")
                     
                     logger.info("Alarm silenced by user")
             
@@ -291,6 +303,8 @@ class InteriorWatchService:
         Creates a new video file with timestamp in the evidence directory.
         Uses H.264 codec (avc1) for better web playback compatibility, with
         fallback to mp4v if avc1 is not available.
+        
+        Dumps pre-event buffer frames to capture footage before the theft trigger.
         """
         if self.video_writer is not None:
             # Already recording
@@ -325,9 +339,22 @@ class InteriorWatchService:
         
         if self.video_writer.isOpened():
             self.recording_active = True
+            self.recording_frame_count = 0  # Reset frame counter
+            
+            # Dump pre-event buffer frames to capture "Pre-Theft" footage
+            logger.info(f"Dumping {len(self.video_buffer)} pre-event frames from ring buffer...")
+            for buffered_frame in self.video_buffer:
+                self.video_writer.write(buffered_frame)
+            
+            # Clear buffer after dumping to avoid duplicate frames
+            self.video_buffer.clear()
+            
+            # Debug logging to help diagnose file creation issues
             logger.info(f"Started recording: {self.current_recording_path}")
+            logger.info(f"Video writer opened: {self.video_writer.isOpened()}")
         else:
             logger.error(f"Failed to start recording: {self.current_recording_path}")
+            logger.error(f"Video writer opened: {self.video_writer.isOpened()}")
             self.video_writer = None
     
     def _calculate_distance(self, pos1, pos2):
@@ -550,8 +577,23 @@ class InteriorWatchService:
             pass
         
         # Step 4: Recording
-        if self.alarm_active and self.recording_active and self.video_writer is not None:
+        # Always buffer frames for pre-event recording
+        self.video_buffer.append(annotated_frame.copy())
+        
+        # Write to video file if recording is active
+        if self.recording_active and self.video_writer is not None:
             self.video_writer.write(annotated_frame)
+            self.recording_frame_count += 1
+            
+            # Check if minimum recording duration is met and alarm is not active
+            if not self.alarm_active and self.recording_frame_count >= MIN_RECORDING_FRAMES:
+                # Stop recording since minimum duration is met and alarm is cleared
+                self.video_writer.release()
+                self.video_writer = None
+                self.recording_active = False
+                logger.info(f"Recording stopped after {self.recording_frame_count} frames (minimum duration met): {self.current_recording_path}")
+                logger.info("Evidence saved successfully")
+                self.recording_frame_count = 0
         
         # Add timestamp
         timestamp_text = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
