@@ -92,7 +92,7 @@ class DoorSentry:
             logger.info("DataStorage initialized successfully")
         except Exception as e:
             logger.error(f"Failed to initialize DataStorage: {e}")
-            logger.warning("Continuing without DataStorage - events will not be logged to database")
+            logger.warning("DataStorage initialization failed - security events and alerts will not be persisted to MongoDB")
             self.storage = None
         
         # Initialize camera
