@@ -1275,6 +1275,7 @@ class TheftDetectionSystem:
         
         # Target selection with priority logic
         target_person = None
+        target_track_id = None
         target_priority = 0  # 0=none, 1=unknown during theft, 2=confirmed thief
         
         for track_id, person_state in self.person_states.items():
@@ -1285,6 +1286,7 @@ class TheftDetectionSystem:
             # Priority 1: Confirmed thief
             if person_state.is_thief:
                 target_person = person_state
+                target_track_id = track_id
                 target_priority = 2
                 break  # Highest priority - stop searching
             
@@ -1292,6 +1294,7 @@ class TheftDetectionSystem:
             if person_state.authorized_name is None and self.is_recording_theft:
                 if target_priority < 1:
                     target_person = person_state
+                    target_track_id = track_id
                     target_priority = 1
         
         # Track target if found
@@ -1312,12 +1315,13 @@ class TheftDetectionSystem:
                     target_center_y = (y1 + y2) / 2
                     
                     # Check if centered (within 60 pixels)
-                    distance_from_center = np.sqrt(
+                    # Use squared distance to avoid expensive sqrt operation
+                    distance_squared = (
                         (target_center_x - frame_center_x)**2 + 
                         (target_center_y - frame_center_y)**2
                     )
                     
-                    is_centered = distance_from_center < 60
+                    is_centered = distance_squared < (60 * 60)  # 60 pixels squared = 3600
                     
                     # Check cooldown
                     current_time = time.time()
@@ -1331,15 +1335,8 @@ class TheftDetectionSystem:
                             logger.warning("GEOTAG FIRED")
                             
                             # Publish MQTT event
-                            # Find the track_id for this person
-                            suspect_id = None
-                            for tid, pstate in self.person_states.items():
-                                if pstate == target_person:
-                                    suspect_id = tid
-                                    break
-                            
-                            if suspect_id is not None:
-                                self._publish_mqtt_event("ACTIVE_DEFENSE", suspect_id, "GEOTAG FIRED")
+                            if target_track_id is not None:
+                                self._publish_mqtt_event("ACTIVE_DEFENSE", target_track_id, "GEOTAG FIRED")
                         except Exception as e:
                             logger.error(f"Error firing shooter: {e}")
             except Exception as e:
