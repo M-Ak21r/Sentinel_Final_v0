@@ -332,19 +332,32 @@ class DoorSentry:
                             duration = current_time - self.unknown_face_start_time
                             # Only publish alert once per intruder detection
                             if duration > self.INTRUDER_ALERT_THRESHOLD_SECONDS and not self.intruder_alert_sent:
+                                # Save evidence first
+                                evidence_file = None
+                                if self.storage is not None:
+                                    try:
+                                        evidence_file = self.storage.save_evidence_image(annotated_frame, "INTRUDER", "unknown")
+                                    except Exception as e:
+                                        logger.error(f"Failed to save evidence image: {e}")
+                                
+                                # Publish MQTT alert
                                 self._publish_alert(
                                     level="critical",
                                     message="Intruder at door"
                                 )
                                 self.intruder_alert_sent = True  # Mark alert as sent
                                 
-                                # Log intruder alert to database
+                                # Log intruder alert to database with evidence reference
                                 if self.storage is not None:
                                     try:
+                                        description = f"Unknown person detected at front door"
+                                        if evidence_file:
+                                            description = f"Unknown person detected. Evidence saved at {evidence_file}"
+                                        
                                         self.storage.log_alert(
                                             alert_type="INTRUDER_DETECTED",
                                             severity="critical",
-                                            description="Unknown person detected at front door",
+                                            description=description,
                                             action_taken="Alert published"
                                         )
                                     except Exception as e:
