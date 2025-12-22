@@ -1583,6 +1583,18 @@ def main():
         default=5000,
         help="Flask server port (default: 5000)"
     )
+    parser.add_argument(
+        "--arduino-port",
+        type=str,
+        default=None,
+        help="Arduino serial port for turret control (e.g., COM11, /dev/ttyUSB0). If not specified, turret features will be disabled."
+    )
+    parser.add_argument(
+        "--arduino-baudrate",
+        type=int,
+        default=9600,
+        help="Arduino serial baud rate (default: 9600)"
+    )
     
     args = parser.parse_args()
     
@@ -1593,6 +1605,8 @@ def main():
             model_path=args.model,
             authorized_dir=args.authorized_dir,
             camera_source=args.camera,
+            arduino_port=args.arduino_port,
+            arduino_baudrate=args.arduino_baudrate,
             mqtt_broker=args.mqtt_broker,
             mqtt_port=args.mqtt_port
         )
