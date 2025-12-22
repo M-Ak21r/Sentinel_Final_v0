@@ -30,6 +30,8 @@ class Colors:
     GREEN = '\033[92m'    # Door Sentry
     BLUE = '\033[94m'     # Interior Watch
     CYAN = '\033[96m'     # Web Interface
+    MAGENTA = '\033[95m'  # Arduino Gateway
+    WHITE = '\033[97m'    # Bridge services
     RED = '\033[91m'      # System errors
     YELLOW = '\033[93m'   # System warnings
     RESET = '\033[0m'     # Reset to default
@@ -52,6 +54,7 @@ class SystemOrchestrator:
     SHUTDOWN_TIMEOUT_SECONDS = 30  # Increased to allow file flush and cleanup
     SHUTDOWN_POLL_INTERVAL_SECONDS = 0.5
     MONITOR_INTERVAL_SECONDS = 1
+    ARDUINO_GATEWAY_STARTUP_DELAY = 3  # Delay after Arduino Gateway starts
     
     def __init__(self):
         """Initialize the orchestrator."""
@@ -62,6 +65,30 @@ class SystemOrchestrator:
         
         # Service definitions
         self.services = {
+            'Arduino_Gateway': {
+                'type': 'python',
+                'path': self.base_dir / 'Shared' / 'hardware' / 'arduino_gateway.py',
+                'prefix': 'ARDUINO',
+                'color': Colors.MAGENTA
+            },
+            'Turret_Tracking': {
+                'type': 'python',
+                'path': self.base_dir / 'Shared' / 'hardware' / 'turret_tracking_service.py',
+                'prefix': 'TURRET',
+                'color': Colors.WHITE
+            },
+            'Door_Lock_Bridge': {
+                'type': 'python',
+                'path': self.base_dir / 'Shared' / 'hardware' / 'door_lock_bridge.py',
+                'prefix': 'DOOR_LOCK',
+                'color': Colors.WHITE
+            },
+            'Window_Lock_Bridge': {
+                'type': 'python',
+                'path': self.base_dir / 'Shared' / 'hardware' / 'window_lock_bridge.py',
+                'prefix': 'WIN_LOCK',
+                'color': Colors.WHITE
+            },
             'Door_Sentry': {
                 'type': 'python',
                 'path': self.base_dir / 'Services' / 'Door_Sentry' / 'main.py',
@@ -206,6 +233,11 @@ class SystemOrchestrator:
                     self._start_python_service(service_name, service_info)
                 elif service_info['type'] == 'npm':
                     self._start_npm_service(service_name, service_info)
+                
+                # Give Arduino Gateway time to establish serial connection
+                if service_name == 'Arduino_Gateway':
+                    print(f"{Colors.YELLOW}[SYSTEM] Waiting {self.ARDUINO_GATEWAY_STARTUP_DELAY}s for Arduino Gateway to initialize...{Colors.RESET}")
+                    time.sleep(self.ARDUINO_GATEWAY_STARTUP_DELAY)
                     
             except Exception as e:
                 print(f"{Colors.RED}[SYSTEM] Failed to start {service_name}: {e}{Colors.RESET}")

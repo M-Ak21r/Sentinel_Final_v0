@@ -424,6 +424,18 @@ class DoorSentry:
                 if not has_unknown:
                     self.unknown_face_start_time = None
                     self.intruder_alert_sent = False
+                
+                # Publish face tracking data for turret control
+                if faces and self.mqtt_client:
+                    try:
+                        frame_h, frame_w = frame.shape[:2]
+                        tracking_data = {
+                            "faces": [{"bbox": f['bbox'], "name": f['name']} for f in faces],
+                            "frame_size": [frame_w, frame_h]
+                        }
+                        self.mqtt_client.publish("sentinel/door/face_tracking", json.dumps(tracking_data))
+                    except Exception:
+                        pass  # Non-critical, don't log
             else:
                 # No faces detected, reset unknown timer
                 self.unknown_face_start_time = None
