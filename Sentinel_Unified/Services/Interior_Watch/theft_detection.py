@@ -36,11 +36,8 @@ import paho.mqtt.client as mqtt
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..', 'Shared'))
 from libs.file_utils import safe_image_write, safe_video_writer, ensure_directory
 
-try:
-    import serial
-    SERIAL_AVAILABLE = True
-except ImportError:
-    SERIAL_AVAILABLE = False
+# Import TurretController for active defense system
+from turret_controller import TurretController
 
 # Configure logging
 logging.basicConfig(
@@ -264,9 +261,21 @@ class TheftDetectionSystem:
         self.recording_frames_remaining = 0
         self.current_theft_timestamp = None
         
-        # Arduino serial connection for lockdown mechanism
-        self.arduino_serial: Optional[serial.Serial] = None
-        self._init_arduino_connection(arduino_port, arduino_baudrate)
+        # Initialize TurretController for active defense system
+        self.turret: Optional[TurretController] = None
+        try:
+            if arduino_port:
+                self.turret = TurretController(serial_port=arduino_port, baud_rate=arduino_baudrate)
+                logger.info("TurretController initialized successfully")
+            else:
+                logger.info("No Arduino port specified. Active defense system disabled.")
+        except Exception as e:
+            logger.warning(f"Failed to initialize TurretController: {e}. Active defense system disabled.")
+            self.turret = None
+        
+        # Active defense state
+        self.last_shot_time = 0
+        self.shoot_cooldown = 5.0  # seconds between shots
         
         # Initialize and start evidence writer thread
         self.evidence_writer = EvidenceWriter()
@@ -278,50 +287,25 @@ class TheftDetectionSystem:
         
         logger.info("System initialized successfully")
     
-    def _init_arduino_connection(self, port: Optional[str], baudrate: int) -> None:
-        """
-        Initialize serial connection with Arduino for lockdown mechanism.
-        
-        Args:
-            port: Serial port for Arduino (e.g., '/dev/ttyUSB0', 'COM3')
-            baudrate: Baud rate for serial communication
-        """
-        if port is None:
-            logger.info("No Arduino port specified. Lockdown mechanism disabled.")
-            return
-        
-        if not SERIAL_AVAILABLE:
-            logger.warning("pyserial not installed. Lockdown mechanism disabled. Install with: pip install pyserial")
-            return
-        
-        try:
-            self.arduino_serial = serial.Serial(port, baudrate, timeout=1)
-            logger.info(f"Arduino connected on {port} at {baudrate} baud")
-        except serial.SerialException as e:
-            logger.warning(f"Failed to connect to Arduino on {port}: {e}. Lockdown mechanism disabled.")
-            self.arduino_serial = None
-        except Exception as e:
-            logger.warning(f"Unexpected error connecting to Arduino: {e}. Lockdown mechanism disabled.")
-            self.arduino_serial = None
-    
     def _trigger_lockdown(self) -> None:
         """
-        Send lockdown signal to Arduino to activate door lock mechanism.
+        Send lockdown signal to trigger door/window lock mechanism.
         
-        Sends a single byte 'L' to the Arduino to trigger immediate lockdown.
-        This method is called synchronously when a theft is confirmed.
+        Uses TurretController to engage lockdown mode which locks both
+        door (S1) and window (S4) servos to 180 degrees.
         """
-        if self.arduino_serial is None:
-            logger.warning("Lockdown signal not sent: Arduino not connected")
+        if self.turret is None:
+            logger.warning("Lockdown signal not sent: TurretController not available")
             return
         
         try:
-            self.arduino_serial.write(b'L')
-            logger.critical("LOCKDOWN SIGNAL SENT")
-        except serial.SerialException as e:
-            logger.error(f"Failed to send lockdown signal: {e}")
+            success = self.turret.engage_lockdown()
+            if success:
+                logger.critical("LOCKDOWN SIGNAL SENT")
+            else:
+                logger.error("Failed to send lockdown signal")
         except Exception as e:
-            logger.error(f"Unexpected error sending lockdown signal: {e}")
+            logger.error(f"Error sending lockdown signal: {e}")
     
     def _init_mqtt_client(self, broker: str, port: int) -> None:
         """
@@ -1266,10 +1250,97 @@ class TheftDetectionSystem:
             scan_alerts = self._periodic_thief_scan(frame)
             alerts.extend(scan_alerts)
         
+        # Process active defense system (turret tracking and engagement)
+        self._process_active_defense(frame.shape)
+        
         # Draw visualization
         annotated_frame = self._draw_visualization(frame, alerts)
         
         return annotated_frame, alerts
+    
+    def _process_active_defense(self, frame_shape: tuple) -> None:
+        """
+        Process active defense logic: target selection, tracking, and engagement.
+        
+        Implements a priority-based targeting system:
+        1. Confirmed thieves (highest priority)
+        2. Unknown persons during active theft (medium priority)
+        3. Authorized personnel are NEVER targeted (safety critical)
+        
+        Args:
+            frame_shape: Shape of the frame (height, width, channels)
+        """
+        if self.turret is None:
+            return
+        
+        # Target selection with priority logic
+        target_person = None
+        target_track_id = None
+        target_priority = 0  # 0=none, 1=unknown during theft, 2=confirmed thief
+        
+        for track_id, person_state in self.person_states.items():
+            # SAFETY CRITICAL: Skip authorized personnel
+            if person_state.authorized_name is not None:
+                continue
+            
+            # Priority 1: Confirmed thief
+            if person_state.is_thief:
+                target_person = person_state
+                target_track_id = track_id
+                target_priority = 2
+                break  # Highest priority - stop searching
+            
+            # Priority 2: Unknown person during active theft
+            if person_state.authorized_name is None and self.is_recording_theft:
+                if target_priority < 1:
+                    target_person = person_state
+                    target_track_id = track_id
+                    target_priority = 1
+        
+        # Track target if found
+        if target_person is not None:
+            try:
+                self.turret.track_target(target_person.bbox, frame_shape)
+                
+                # Engagement logic: Only for confirmed thieves
+                if target_person.is_thief:
+                    # Check if target is centered
+                    frame_height, frame_width = frame_shape[:2]
+                    frame_center_x = frame_width / 2
+                    frame_center_y = frame_height / 2
+                    
+                    # Calculate target center
+                    x1, y1, x2, y2 = target_person.bbox
+                    target_center_x = (x1 + x2) / 2
+                    target_center_y = (y1 + y2) / 2
+                    
+                    # Check if centered (within 60 pixels)
+                    # Use squared distance to avoid expensive sqrt operation
+                    distance_squared = (
+                        (target_center_x - frame_center_x)**2 + 
+                        (target_center_y - frame_center_y)**2
+                    )
+                    
+                    is_centered = distance_squared < (60 * 60)  # 60 pixels squared = 3600
+                    
+                    # Check cooldown
+                    current_time = time.time()
+                    cooldown_ok = (current_time - self.last_shot_time) > self.shoot_cooldown
+                    
+                    # Fire if centered and cooldown OK
+                    if is_centered and cooldown_ok:
+                        try:
+                            self.turret.shoot()
+                            self.last_shot_time = current_time
+                            logger.warning("GEOTAG FIRED")
+                            
+                            # Publish MQTT event
+                            if target_track_id is not None:
+                                self._publish_mqtt_event("ACTIVE_DEFENSE", target_track_id, "GEOTAG FIRED")
+                        except Exception as e:
+                            logger.error(f"Error firing shooter: {e}")
+            except Exception as e:
+                logger.error(f"Error in active defense tracking: {e}")
     
     def generate_frames(self) -> Iterator[bytes]:
         """
@@ -1388,6 +1459,14 @@ class TheftDetectionSystem:
         logger.info("Stopping evidence writer thread...")
         self.evidence_writer.stop()
         
+        # Cleanup turret controller
+        if self.turret:
+            logger.info("Cleaning up TurretController...")
+            try:
+                self.turret.cleanup()
+            except Exception as e:
+                logger.error(f"Error cleaning up TurretController: {e}")
+        
         # Disconnect MQTT client
         if self.mqtt_client:
             self.mqtt_client.loop_stop()
@@ -1504,6 +1583,18 @@ def main():
         default=5000,
         help="Flask server port (default: 5000)"
     )
+    parser.add_argument(
+        "--arduino-port",
+        type=str,
+        default=None,
+        help="Arduino serial port for turret control (e.g., COM11, /dev/ttyUSB0). If not specified, turret features will be disabled."
+    )
+    parser.add_argument(
+        "--arduino-baudrate",
+        type=int,
+        default=9600,
+        help="Arduino serial baud rate (default: 9600)"
+    )
     
     args = parser.parse_args()
     
@@ -1514,6 +1605,8 @@ def main():
             model_path=args.model,
             authorized_dir=args.authorized_dir,
             camera_source=args.camera,
+            arduino_port=args.arduino_port,
+            arduino_baudrate=args.arduino_baudrate,
             mqtt_broker=args.mqtt_broker,
             mqtt_port=args.mqtt_port
         )
