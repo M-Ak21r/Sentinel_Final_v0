@@ -318,6 +318,51 @@ class TurretController:
         """
         return (self.current_pan, self.current_tilt)
     
+    def test_connection(self):
+        """Test if Arduino is responding to commands.
+        
+        Sends a simple pan command and checks for response.
+        
+        Returns:
+            bool: True if Arduino responds, False otherwise
+        """
+        if self.serial_connection is None:
+            logger.error("Cannot test connection: Serial port not connected")
+            return False
+        
+        try:
+            logger.info("Testing Arduino connection...")
+            
+            # Clear any pending data
+            self.serial_connection.reset_input_buffer()
+            
+            # Send a simple pan command
+            test_command = "S2,90\n"
+            self.serial_connection.write(test_command.encode('utf-8'))
+            self.serial_connection.flush()
+            
+            # Wait for response
+            time.sleep(0.2)
+            
+            # Check for ACK
+            if self.serial_connection.in_waiting > 0:
+                response = self.serial_connection.readline().decode('utf-8').strip()
+                logger.info(f"Arduino responded: {response}")
+                
+                if "ACK" in response:
+                    logger.info("✓ Arduino connection test PASSED")
+                    return True
+                else:
+                    logger.warning(f"Unexpected response from Arduino: {response}")
+                    return False
+            else:
+                logger.error("✗ No response from Arduino (check baud rate, port, and uploaded sketch)")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Connection test failed: {e}")
+            return False
+    
     def cleanup(self):
         """Close serial connection and cleanup resources."""
         try:
