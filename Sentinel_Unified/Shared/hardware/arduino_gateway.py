@@ -60,10 +60,29 @@ class ArduinoGateway:
         self.mqtt_client = None
         self.running = True
         self.serial_lock = threading.Lock()
+        self.serial_reader_thread = None
         
         print(f"[ARDUINO_GATEWAY] Initialized")
         print(f"[ARDUINO_GATEWAY] Serial: {self.serial_port} @ {self.baud_rate}")
         print(f"[ARDUINO_GATEWAY] MQTT: {self.mqtt_broker}:{self.mqtt_port}")
+    
+    def _serial_reader(self):
+        """
+        Background thread to read and display Arduino responses.
+        """
+        while self.running:
+            try:
+                if self.serial_conn and self.serial_conn.is_open and self.serial_conn.in_waiting > 0:
+                    with self.serial_lock:
+                        line = self.serial_conn.readline().decode('utf-8', errors='replace').strip()
+                        if line:
+                            print(f"[ARDUINO_GATEWAY] RX << Arduino: {line}")
+                else:
+                    time.sleep(0.1)
+            except Exception as e:
+                if self.running:
+                    print(f"[ARDUINO_GATEWAY] [ERROR] Serial read error: {e}")
+                time.sleep(0.5)
     
     def connect_serial(self):
         """
@@ -86,6 +105,11 @@ class ArduinoGateway:
             
             # Wait for Arduino to reset after serial connection
             time.sleep(2)
+            
+            # Start serial reader thread
+            if self.serial_reader_thread is None or not self.serial_reader_thread.is_alive():
+                self.serial_reader_thread = threading.Thread(target=self._serial_reader, daemon=True)
+                self.serial_reader_thread.start()
             
             print(f"[ARDUINO_GATEWAY] [OK] Arduino connected on {self.serial_port}")
             return True
@@ -264,7 +288,33 @@ class ArduinoGateway:
 
 def main():
     """Main entry point."""
+    import argparse
+    
+    parser = argparse.ArgumentParser(description='Arduino Gateway Service')
+    parser.add_argument('--test', action='store_true', help='Run servo test on startup')
+    args = parser.parse_args()
+    
     gateway = ArduinoGateway()
+    
+    if args.test:
+        # Test mode: send test commands directly
+        print(f"[ARDUINO_GATEWAY] === TEST MODE ===")
+        if gateway.connect_serial():
+            import time
+            test_commands = [
+                ("S2,+500", "Pan servo CW 500ms"),
+                ("S2,-500", "Pan servo CCW 500ms"),
+                ("S3,+500", "Tilt servo CW 500ms"),
+                ("S3,-500", "Tilt servo CCW 500ms"),
+            ]
+            for cmd, desc in test_commands:
+                print(f"[ARDUINO_GATEWAY] Testing: {desc}")
+                gateway.send_command(cmd)
+                time.sleep(1.5)  # Wait for movement + settle time
+            print(f"[ARDUINO_GATEWAY] === TEST COMPLETE ===")
+        else:
+            print(f"[ARDUINO_GATEWAY] [ERROR] Could not connect to Arduino for test")
+    
     gateway.run()
 
 

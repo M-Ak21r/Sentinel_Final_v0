@@ -24,6 +24,7 @@ import os
 import sys
 import json
 import time
+import threading
 import paho.mqtt.client as mqtt
 from pathlib import Path
 
@@ -43,6 +44,7 @@ class DoorLockBridge:
     # Door servo configuration
     DOOR_SERVO = "S1"
     LOCK_DURATION_MS = 2500  # Half-cycle for continuous rotation servo
+    AUTO_LOCK_DELAY_SECONDS = 5.0  # Auto-lock after this many seconds
     
     # Rate limiting
     MIN_OPERATION_INTERVAL_SECONDS = 3.0
@@ -58,6 +60,7 @@ class DoorLockBridge:
         self.running = True
         self.last_operation_time = 0
         self.door_locked = True  # Assume door starts locked
+        self.auto_lock_timer = None  # Timer for auto-lock
         
         print(f"[DOOR_LOCK_BRIDGE] Initialized")
         print(f"[DOOR_LOCK_BRIDGE] Door servo: {self.DOOR_SERVO}")
@@ -75,6 +78,7 @@ class DoorLockBridge:
     def _on_mqtt_message(self, client, userdata, msg):
         """Handle incoming door control messages."""
         try:
+            print(f"[DOOR_LOCK_BRIDGE] Received message on {msg.topic}: {msg.payload.decode('utf-8')}")
             data = json.loads(msg.payload.decode('utf-8'))
             self._process_door_command(data)
         except json.JSONDecodeError as e:
@@ -117,10 +121,6 @@ class DoorLockBridge:
             user: Username requesting unlock
             reason: Reason for unlock
         """
-        if not self.door_locked:
-            print(f"[DOOR_LOCK_BRIDGE] Door already unlocked")
-            return
-        
         print(f"[DOOR_LOCK_BRIDGE] >> UNLOCKING door for {user}")
         if reason:
             print(f"[DOOR_LOCK_BRIDGE] Reason: {reason}")
@@ -131,6 +131,9 @@ class DoorLockBridge:
         
         self.door_locked = False
         self.last_operation_time = time.time()
+        
+        # Schedule auto-lock after delay
+        self._schedule_auto_lock()
     
     def _lock_door(self, user, reason):
         """
@@ -154,6 +157,41 @@ class DoorLockBridge:
         
         self.door_locked = True
         self.last_operation_time = time.time()
+        
+        # Cancel any pending auto-lock timer
+        if self.auto_lock_timer:
+            self.auto_lock_timer.cancel()
+            self.auto_lock_timer = None
+    
+    def _schedule_auto_lock(self):
+        """Schedule automatic re-lock after delay."""
+        # Cancel any existing timer
+        if self.auto_lock_timer:
+            self.auto_lock_timer.cancel()
+        
+        print(f"[DOOR_LOCK_BRIDGE] Auto-lock scheduled in {self.AUTO_LOCK_DELAY_SECONDS}s")
+        
+        self.auto_lock_timer = threading.Timer(
+            self.AUTO_LOCK_DELAY_SECONDS,
+            self._auto_lock_callback
+        )
+        self.auto_lock_timer.daemon = True  # Ensure timer doesn't block shutdown
+        self.auto_lock_timer.start()
+    
+    def _auto_lock_callback(self):
+        """Callback for auto-lock timer."""
+        print(f"[DOOR_LOCK_BRIDGE] Auto-lock timer fired! door_locked={self.door_locked}, running={self.running}")
+        if not self.door_locked and self.running:
+            print(f"[DOOR_LOCK_BRIDGE] >> AUTO-LOCKING door (timer expired)")
+            
+            # Send lock command (CW rotation)
+            cmd = f"{self.DOOR_SERVO},+{self.LOCK_DURATION_MS}"
+            self._send_arduino_command(cmd)
+            
+            self.door_locked = True
+            self.last_operation_time = time.time()
+        
+        self.auto_lock_timer = None
     
     def _send_arduino_command(self, command):
         """
@@ -208,6 +246,11 @@ class DoorLockBridge:
         """Gracefully shutdown the service."""
         print(f"[DOOR_LOCK_BRIDGE] Shutting down...")
         self.running = False
+        
+        # Cancel auto-lock timer
+        if self.auto_lock_timer:
+            self.auto_lock_timer.cancel()
+            self.auto_lock_timer = None
         
         if self.mqtt_client:
             self.mqtt_client.loop_stop()

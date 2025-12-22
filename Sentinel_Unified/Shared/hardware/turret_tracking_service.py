@@ -45,8 +45,8 @@ class TurretTrackingService:
     FIRE_COOLDOWN_SECONDS = 3.0   # Minimum time between shots
     
     # Servo movement configuration
-    PAN_MOVE_DURATION_MS = 100    # Duration for pan adjustment
-    TILT_MOVE_DURATION_MS = 100   # Duration for tilt adjustment
+    PAN_MOVE_DURATION_MS = 300    # Duration for pan adjustment (increased for visible movement)
+    TILT_MOVE_DURATION_MS = 300   # Duration for tilt adjustment (increased for visible movement)
     DEAD_ZONE_PX = 10             # Don't move if within dead zone
     
     def __init__(self):
@@ -148,11 +148,14 @@ class TurretTrackingService:
         if abs(offset_x) <= self.DEAD_ZONE_PX and abs(offset_y) <= self.DEAD_ZONE_PX:
             return
         
+        print(f"[TURRET_TRACKING] Adjusting - offset_x={offset_x}, offset_y={offset_y}")
+        
         # Pan (horizontal) - S2
         if abs(offset_x) > self.DEAD_ZONE_PX:
             # Direction: positive offset = face is right = pan right (CW)
             direction = "+" if offset_x > 0 else "-"
             cmd = f"S2,{direction}{self.PAN_MOVE_DURATION_MS}"
+            print(f"[TURRET_TRACKING] PAN command: {cmd}")
             self._send_arduino_command(cmd)
         
         # Tilt (vertical) - S3
@@ -160,6 +163,7 @@ class TurretTrackingService:
             # Direction: positive offset = face is below = tilt down (CW)
             direction = "+" if offset_y > 0 else "-"
             cmd = f"S3,{direction}{self.TILT_MOVE_DURATION_MS}"
+            print(f"[TURRET_TRACKING] TILT command: {cmd}")
             self._send_arduino_command(cmd)
     
     def _try_fire(self):
@@ -183,8 +187,14 @@ class TurretTrackingService:
         Args:
             command: Command string (e.g., "S2,+100", "FIRE")
         """
-        if self.mqtt_client:
-            self.mqtt_client.publish(self.ARDUINO_COMMANDS_TOPIC, command)
+        if self.mqtt_client and self.mqtt_client.is_connected():
+            result = self.mqtt_client.publish(self.ARDUINO_COMMANDS_TOPIC, command)
+            if result.rc == 0:
+                print(f"[TURRET_TRACKING] >> SENT: {command}")
+            else:
+                print(f"[TURRET_TRACKING] [ERROR] Failed to publish: {command} (rc={result.rc})")
+        else:
+            print(f"[TURRET_TRACKING] [ERROR] MQTT not connected, cannot send: {command}")
     
     def connect_mqtt(self):
         """Connect to MQTT broker."""
