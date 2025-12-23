@@ -22,19 +22,21 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ message: 'Missing required fields' }, { status: 400 })
     }
 
+    console.log('🔄 [SIGNUP] Attempting MongoDB connection...')
     try {
       const usersCollection = await getCollection<User>('users')
-      console.log('✓ Connected to users collection')
+      console.log('✅ [SIGNUP] Connected to MongoDB users collection')
 
       // Check if user exists
       const userExists = await usersCollection.findOne({ email: normalizedEmail })
       if (userExists) {
+        console.log('⚠️  [SIGNUP] User already exists:', normalizedEmail)
         return NextResponse.json({ message: 'User already exists' }, { status: 409 })
       }
 
       // Hash password
       const hashedPassword = await bcrypt.hash(password, 10)
-      console.log('✓ Password hashed')
+      console.log('✓ [SIGNUP] Password hashed')
 
       // Create new user
       const result = await usersCollection.insertOne({
@@ -43,7 +45,9 @@ export async function POST(request: NextRequest) {
         password: hashedPassword,
         createdAt: new Date(),
       })
-      console.log('✓ User inserted into MongoDB:', result.insertedId)
+      console.log('✅ [SIGNUP] User saved to MongoDB! ID:', result.insertedId)
+      console.log('📧 [SIGNUP] Email:', normalizedEmail)
+      console.log('👤 [SIGNUP] Name:', name)
 
       const userId = result.insertedId.toString()
 
@@ -60,9 +64,15 @@ export async function POST(request: NextRequest) {
         { status: 201 }
       )
     } catch (dbError) {
-      console.error('❌ Database error during signup:', dbError)
+      console.error('=' .repeat(60))
+      console.error('❌ [SIGNUP] MongoDB CONNECTION FAILED!')
       console.error('Error type:', (dbError as any)?.name)
       console.error('Error message:', (dbError as any)?.message)
+      console.error('Stack:', (dbError as any)?.stack)
+      console.error('=' .repeat(60))
+      console.warn('⚠️  [SIGNUP] FALLING BACK TO MOCK USERS (IN-MEMORY ONLY)')
+      console.warn('⚠️  [SIGNUP] User will NOT be saved to database!')
+      console.warn('⚠️  [SIGNUP] User will be lost on server restart!')
       
       // Fallback to mock users if database is not available
       if (mockUsers[email]) {
@@ -80,6 +90,7 @@ export async function POST(request: NextRequest) {
         email,
         password: hashedPassword,
       }
+      console.log('⚠️  [SIGNUP] User stored in MOCK memory (temporary):', email)
 
       const token = Buffer.from(
         JSON.stringify({ id: userId, email, name })

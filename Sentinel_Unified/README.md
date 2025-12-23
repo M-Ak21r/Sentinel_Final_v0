@@ -41,13 +41,28 @@ Edit `.env` file with your specific configuration:
 
 ### 3. Start Services
 
-```bash
-# Start all services
-python start_sentinel.py
+The `start_sentinel.py` script is the **Master Switch** that orchestrates all services:
 
-# Or start a specific service
-python start_sentinel.py --service door_sentry
+```bash
+# Start all services (Door Sentry, Interior Watch, Web Interface)
+python start_sentinel.py
 ```
+
+**Features:**
+- ✅ Launches all microservices simultaneously
+- ✅ Aggregates logs with color-coded output (Green=Door, Blue=Interior, Cyan=Web)
+- ✅ Checks for MQTT broker (Mosquitto) on port 1883
+- ✅ Monitors services for crashes
+- ✅ Graceful shutdown with Ctrl+C
+
+**Before starting:**
+- Ensure MQTT broker (Mosquitto) is running: `sudo systemctl start mosquitto` (Linux) or `mosquitto` (Windows)
+- Install Node.js dependencies for Web Interface: `cd Web_Interface && npm install`
+
+**Service Endpoints:**
+- Door Sentry API: http://localhost:5001
+- Interior Watch API: http://localhost:5002  
+- Web Dashboard: http://localhost:3000
 
 ## 📦 Technology Stack
 

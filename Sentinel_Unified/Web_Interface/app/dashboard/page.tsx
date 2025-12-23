@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import { useRouter } from 'next/navigation'
 import Sidebar from '@/app/components/Sidebar'
-import VideoFeed from '@/app/components/VideoFeed'
+import CameraStatusCards from '@/app/components/CameraStatusCards'
 
 interface AlertEvent {
   time: string
@@ -86,18 +86,9 @@ export default function DashboardPage() {
 
         <div className="p-8">
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            {/* Video Feeds Grid - Takes 2 columns on large screens */}
+            {/* Camera Status Cards - Low Bandwidth Metadata */}
             <div className="lg:col-span-2 space-y-6">
-              <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-                <VideoFeed
-                  src={process.env.NEXT_PUBLIC_DOOR_SENTRY_URL || "http://localhost:5001/video_feed"}
-                  label="Door Sentry"
-                />
-                <VideoFeed
-                  src={process.env.NEXT_PUBLIC_INTERIOR_WATCH_URL || "http://localhost:5002/video_feed"}
-                  label="Interior Watch"
-                />
-              </div>
+              <CameraStatusCards showViewStreamsButton={true} />
 
               {/* Command Status */}
               {commandStatus && (
